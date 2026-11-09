@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Sand tile, dark price tag (a listing), lavender arrow (list it / relist it). Colours match the app UI. -->
+  <rect width="512" height="512" rx="120" fill="#d9d2c3"/>
+  <g transform="translate(19 -19)">
+    <g transform="rotate(-45 256 256)">
+      <path d="M146 176 H340 a36 36 0 0 1 36 36 V300 a36 36 0 0 1 -36 36 H146 L82 256 Z" fill="#141210"/>
+      <circle cx="142" cy="256" r="20" fill="#d9d2c3"/>
+    </g>
+    <path d="M262 316 L262 214 M218 254 L262 210 L306 254" fill="none" stroke="#c8c6ff" stroke-width="30" stroke-linecap="round" stroke-linejoin="round" transform="rotate(45 262 262)"/>
+  </g>
+</svg>

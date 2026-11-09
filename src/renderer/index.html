@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-src https://*.trademe.co.nz" />
+  <title>Tagline</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="logo.svg" />
+</head>
+<body>
+  <aside class="nav">
+    <div class="brand"><img class="logo" src="logo.svg" alt="" /><div><b>Tagline</b><small id="envTag"></small></div></div>
+    <button data-view="new" class="active"><span>＋</span>New listing</button>
+    <button data-view="live"><span>●</span>Live</button>
+    <button data-view="relist"><span>↻</span>Relist</button>
+    <button data-view="sold"><span>$</span>Sold</button>
+    <button data-view="questions"><span>?</span>Questions<i class="nav-badge" id="qBadge" hidden></i></button>
+    <button data-view="defaults"><span>◧</span>Defaults</button>
+    <button data-view="history"><span>☰</span>History</button>
+    <button data-view="settings"><span>⚙</span>Settings</button>
+    <div class="nav-foot" id="navAccount"></div>
+  </aside>
+  <main id="view"></main>
+  <div id="toast"></div>
+  <div id="modal" class="modal hidden"><div class="modal-card" id="modalCard"></div></div>
+  <script src="app.js"></script>
+</body>
+</html>

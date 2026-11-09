@@ -1,0 +1,80 @@
+{
+  "name": "trademe-lister",
+  "version": "0.1.0",
+  "description": "Fast shoe listing tool for Trade Me",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win --publish never",
+    "release": "electron-builder --win --publish always"
+  },
+  "devDependencies": {
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
+  "productName": "Tagline",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/FootlockerNZ/trademe-lister.git"
+  },
+  "build": {
+    "appId": "nz.footlocker.tagline",
+    "productName": "Tagline",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "build/icon.*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "artifactName": "Tagline-Setup-${version}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "FootlockerNZ",
+        "repo": "trademe-lister",
+        "releaseType": "release"
+      }
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.business",
+      "icon": "build/icon.png",
+      "identity": null,
+      "artifactName": "Tagline-${version}-${arch}-mac.${ext}"
+    },
+    "dmg": {
+      "artifactName": "Tagline-${version}-${arch}.${ext}"
+    }
+  }
+}

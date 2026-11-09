@@ -1,0 +1,30 @@
+# Push a tag like v0.2.0 (matching package.json "version") to build Windows + Mac
+# and attach the installers to that GitHub Release. The app's "Check for updates" reads from there.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build and publish
+        run: npx electron-builder --publish always ${{ matrix.os == 'macos-latest' && '--mac' || '--win' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No Apple certificate yet: build unsigned.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
