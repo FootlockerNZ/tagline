@@ -1,7 +1,10 @@
 # Tagline
 
-Desktop app for listing shoes on Trade Me fast: SKU lookup, size conversion, price comps,
-live listing management (edit, withdraw, bulk price drops, views and watchers), sold and relist views.
+Desktop app for listing on Trade Me fast. Set up a section for each kind of thing you sell, with its
+own category, templates, shipping and payment, then list in seconds. Manage everything after that from
+one place: live listings (edit, withdraw, bulk price drops, views and watchers), relists, sales, buyer
+questions and a full history. Optional product lookup by SKU, size conversion and price comparisons
+help when you sell branded stock such as sneakers.
 
 Your Trade Me API keys, accounts and tokens are stored on your own computer only, never in this repo.
 
@@ -9,7 +12,7 @@ Your Trade Me API keys, accounts and tokens are stored on your own computer only
 
 | | |
 |---|---|
-| **New listing**: enter a SKU, it fills the details, price and fees.<br><img src="docs/screenshots/new.png" width="420"> | **Live**: everything for sale, with views, watchers, edits and bulk price drops.<br><img src="docs/screenshots/live.png" width="420"> |
+| **New listing**: pick a section, fill in the item, see fees and your payout, list.<br><img src="docs/screenshots/new.png" width="420"> | **Live**: everything for sale, with views, watchers, edits and bulk price drops.<br><img src="docs/screenshots/live.png" width="420"> |
 | **Relist**: unsold listings to relist in one go, or archive.<br><img src="docs/screenshots/relist.png" width="420"> | **Sold**: what sold, fees and your payout.<br><img src="docs/screenshots/sold.png" width="420"> |
 | **Questions**: answer buyer questions without leaving the app.<br><img src="docs/screenshots/questions.png" width="420"> | **Defaults**: per-section category, templates, shipping and payment.<br><img src="docs/screenshots/defaults.png" width="420"> |
 | **History**: every listing, price change, withdrawal, relist and more.<br><img src="docs/screenshots/history.png" width="420"> | **Settings**: accounts, API keys, product lookup and updates.<br><img src="docs/screenshots/settings.png" width="420"> |
@@ -53,14 +56,15 @@ drag it into Applications to replace the old app. Your settings are kept.
    below) and paste them into **Settings → Trade Me API** in Tagline.
 2. **Add your Trade Me account(s).** In **Settings → Accounts**, click **Log in with Trade Me**, sign in and click **Allow**.
    You can add more than one and choose a default.
-3. **Set up your sections.** Under **Defaults**, each section (Men's sneakers, Women's sneakers,
-   Collectables, or your own) has its own category, listing type, shipping, payment and
-   **title/description templates**. The templates start empty: fill them in with your own wording
-   and placeholders like `{brand}`, `{name}`, `{sku}`, `{size}` and `{condition}`.
-4. *(Optional)* **Product lookup token.** Paste a Trace bearer token under **Settings → Product lookup (Trace)** to fill product
-   details from a SKU.
+3. **Set up your sections.** Under **Defaults**, make a section for each kind of thing you sell
+   (rename, delete or add your own; the starter ones are just examples). Each section has its own
+   category, listing type, shipping, payment and **title/description templates**. The templates start
+   empty: fill them in with your own wording and placeholders like `{brand}`, `{name}`, `{condition}`,
+   `{sku}` and `{size}`. Click **Preview** to see what a listing would look like.
+4. *(Optional)* **Product lookup token.** If you sell branded stock with style codes (e.g. sneakers),
+   paste a Trace bearer token under **Settings → Product lookup (Trace)** to fill product details from a SKU.
 
-That's it: enter a SKU, pick a size and price, and list.
+That's it: pick a section, fill in the item and price, and list.
 
 ---
 
