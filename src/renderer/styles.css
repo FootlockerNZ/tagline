@@ -71,8 +71,10 @@ code { background: var(--panel-2); color: var(--sand); padding: 2px 6px; border-
 
 /* sku hero */
 .sku-wrap { position: relative; }
-.sku-wrap input { font-size: 30px; font-weight: 500; letter-spacing: -0.02em; padding: 18px 170px 18px 20px; text-transform: uppercase; border-radius: 16px; background: var(--field); }
-.sku-wrap input::placeholder { text-transform: none; font-size: 20px; }
+.sku-wrap input { font-size: 30px; font-weight: 500; letter-spacing: -0.02em; height: 74px; padding: 0 170px 0 20px; text-transform: uppercase; border-radius: 16px; background: var(--field); }
+/* Empty box uses the placeholder size so the placeholder sits on the vertical center, not the 30px baseline. */
+.sku-wrap input:placeholder-shown { font-size: 20px; }
+.sku-wrap input::placeholder { text-transform: none; }
 .sku-wrap input { text-transform: none; }
 .badge { display: inline-flex; align-items: center; gap: 6px; padding: 5px 11px; border-radius: 99px; font-size: 12px; font-weight: 600; background: var(--panel-2); color: var(--text); }
 .sku-wrap .badge { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); }
