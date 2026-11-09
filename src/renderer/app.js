@@ -18,12 +18,34 @@ function toast(msg) {
   clearTimeout(t._h);
   t._h = setTimeout(() => t.classList.remove('show'), 2200);
 }
+let modalOnClose = null;
 function modal(html) {
+  modalOnClose = null;
   $('#modalCard').innerHTML = html;
   $('#modal').classList.remove('hidden');
   return $('#modalCard');
 }
-const closeModal = () => $('#modal').classList.add('hidden');
+const closeModal = () => {
+  $('#modal').classList.add('hidden');
+  const f = modalOnClose;
+  modalOnClose = null;
+  f?.();
+};
+// In-app replacement for confirm(): resolves true on the action button, false on Cancel, Esc or a click outside.
+function ask({ title, body = '', ok = 'OK', danger = false }) {
+  return new Promise((resolve) => {
+    const card = modal(`
+      <h3>${esc(title)}</h3>
+      ${body ? `<p class="hint" style="font-size:14px;margin:0">${esc(body)}</p>` : ''}
+      <div class="actions"><button class="btn ghost" id="cancel">Cancel</button><button class="btn ${danger ? 'danger' : 'primary'}" id="go">${esc(ok)}</button></div>`);
+    modalOnClose = () => resolve(false);
+    $('#cancel', card).onclick = closeModal;
+    $('#go', card).onclick = () => ((modalOnClose = () => resolve(true)), closeModal());
+    // Enter shouldn't delete things by accident: destructive asks focus Cancel.
+    $(danger ? '#cancel' : '#go', card).focus();
+  });
+}
+document.addEventListener('keydown', (e) => e.key === 'Escape' && !$('#modal').classList.contains('hidden') && !$('#go:disabled') && closeModal());
 const debounce = (fn, ms) => {
   let h;
   return (...a) => (clearTimeout(h), (h = setTimeout(() => fn(...a), ms)));
@@ -2554,7 +2576,8 @@ function renderSettings() {
     $$('[data-del]').forEach(
       (b) =>
         (b.onclick = async () => {
-          if (!confirm('Remove this account from the app?')) return;
+          const acc = S.accounts.find((a) => a.id === b.dataset.del);
+          if (!(await ask({ title: `Remove ${acc?.nickname || 'this account'}?`, body: 'It comes out of Tagline only. Your Trade Me account and listings are not touched, and you can log it back in any time.', ok: 'Remove account', danger: true }))) return;
           S = await api.removeAccount(b.dataset.del);
           renderNav();
           accList();
@@ -2796,10 +2819,10 @@ function renderSections() {
   // × on a section chip deletes that section (after asking).
   $$('#secSeg [data-del]').forEach(
     (x) =>
-      (x.onclick = (e) => {
+      (x.onclick = async (e) => {
         e.stopPropagation();
         const target = profiles.find((s) => s.id === x.dataset.del);
-        if (!target || !confirm(`Delete the "${target.name}" section? Its category, templates and defaults go with it.`)) return;
+        if (!target || !(await ask({ title: `Delete "${target.name}"?`, body: 'Its category, templates and defaults go with it. This can\'t be undone.', ok: 'Delete section', danger: true }))) return;
         const rest = profiles.filter((s) => s.id !== target.id);
         persist(rest);
         if (editProfileId === target.id) editProfileId = rest[0].id;
@@ -2815,8 +2838,8 @@ function renderSections() {
     renderSections();
     $('#secName').select();
   };
-  $('#delSec')?.addEventListener('click', () => {
-    if (!confirm(`Delete the "${p.name}" section?`)) return;
+  $('#delSec')?.addEventListener('click', async () => {
+    if (!(await ask({ title: `Delete "${p.name}"?`, body: 'Its category, templates and defaults go with it. This can\'t be undone.', ok: 'Delete section', danger: true }))) return;
     const rest = profiles.filter((x) => x.id !== p.id);
     persist(rest);
     editProfileId = rest[0].id;
