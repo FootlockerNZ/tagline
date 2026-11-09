@@ -2410,6 +2410,31 @@ async function sendAnswer(listing, qid) {
   if (current === 'questions') renderQuestions();
 }
 
+// Shows what a section's templates produce for a sample product (Nike Dunk Low "Panda", DD1391-100, US 10).
+function previewTemplates(p) {
+  const afterpay = !!p.payment?.afterpay;
+  const base = {
+    brand: 'Nike', name: 'Dunk Low Retro White Black Panda', sku: 'DD1391-100', size: sizeText('10'), eu: euSize('10', 'nike'),
+    colour: 'White/Black', condition: p.isBrandNew === false ? 'Used' : 'Brand new', ...shipVars(p.shipping),
+  };
+  const title = fill(p.titleTemplate, { ...base, afterpay: afterpay ? (p.afterpayText ?? 'AfterPay Available').trim() : '' }).trim();
+  const desc = fill(p.descriptionTemplate, { ...base, afterpay: afterpay ? (p.afterpayDescText ?? 'AfterPay Available').trim() : '' });
+  const over = title.length > 80;
+  const shipErr = shipRefError(p);
+  const card = modal(`
+    <h3>Listing preview</h3>
+    <p class="hint" style="margin:-10px 0 16px">${esc(p.name)} · Nike Dunk Low "Panda" DD1391-100, US 10${afterpay ? ' · Afterpay on' : ''}</p>
+    <div class="tpl-prev">
+      <div class="tpl-prev-label">Title <span class="${over ? 'tpl-over' : ''}">${title.length}/80${over ? ' · too long' : ''}</span></div>
+      <div class="tpl-prev-title">${title ? esc(title) : '<span class="tpl-empty">Title template is empty</span>'}</div>
+      <div class="tpl-prev-label">Description</div>
+      <div class="tpl-prev-desc">${desc.trim() ? esc(desc) : '<span class="tpl-empty">Description template is empty</span>'}</div>
+    </div>
+    ${shipErr ? `<p class="hint" style="color:var(--red)">${esc(shipErr)}</p>` : ''}
+    <div class="actions"><button class="btn primary" id="cancel">Close</button></div>`);
+  $('#cancel', card).onclick = closeModal;
+}
+
 /* ---------- HISTORY ---------- */
 // Every action taken from the app. Entries from before the activity log have no action: they were listings.
 const H_ACTIONS = {
@@ -2865,6 +2890,7 @@ function renderSections() {
           <label class="f">Afterpay text (description) <input id="tAfterpayDesc" value="${esc(p.afterpayDescText ?? 'AfterPay Available')}" placeholder="AfterPay Available" /></label>
         </div>
         <p class="hint">Placeholders: <code>{brand}</code> <code>{name}</code> <code>{sku}</code> <code>{size}</code> <code>{eu}</code> <code>{colour}</code> <code>{condition}</code> <code>{afterpay}</code> (shows the matching Afterpay text above exactly as typed, only when Afterpay is on)</p>
+        <div style="margin:14px 0 4px"><button class="btn" id="tPreview">Preview with a Panda Dunk</button></div>
         <p class="hint">Shipping: <code>{shippingName1}</code> <code>{shippingValue1}</code>, <code>{shippingName2}</code> <code>{shippingValue2}</code>… numbered in the order of your options under Shipping (e.g. "Nationwide courier" and "$8").</p>
       </div>
     </div>`;
@@ -2992,6 +3018,7 @@ function renderSections() {
   $('#addShip').onclick = () => (p.shipping.push({ method: '', price: '' }), renderShip());
 
   $('#tTitle').oninput = (e) => ((p.titleTemplate = e.target.value), save());
+  $('#tPreview').onclick = () => previewTemplates(p);
   $('#tDesc').oninput = (e) => ((p.descriptionTemplate = e.target.value), save());
   $('#tAfterpay').oninput = (e) => ((p.afterpayText = e.target.value), save());
   $('#tAfterpayDesc').oninput = (e) => ((p.afterpayDescText = e.target.value), save());

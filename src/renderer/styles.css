@@ -403,3 +403,12 @@ details.comps { margin-top: 10px; padding-top: 10px; }
 .h-time { flex: none; width: 64px; text-align: right; color: var(--muted); font-size: 12.5px; }
 .h-open-gap { flex: none; width: 58px; }
 .h-row .rl-noimg { display: block; background: var(--field); }
+
+/* Template preview */
+.tpl-prev { background: var(--field); border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px; }
+.tpl-prev-label { display: flex; justify-content: space-between; color: var(--muted); font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+.tpl-prev-label:not(:first-child) { margin-top: 16px; }
+.tpl-prev-title { font-size: 17px; font-weight: 600; line-height: 1.35; word-break: break-word; }
+.tpl-prev-desc { white-space: pre-wrap; line-height: 1.55; max-height: 300px; overflow: auto; word-break: break-word; }
+.tpl-over { color: var(--red); }
+.tpl-empty { color: var(--muted); font-weight: 400; font-style: italic; }
