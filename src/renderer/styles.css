@@ -416,3 +416,12 @@ details.comps { margin-top: 10px; padding-top: 10px; }
 .tpl-prev-desc { white-space: pre-wrap; line-height: 1.55; max-height: 300px; overflow: auto; word-break: break-word; }
 .tpl-over { color: var(--red); }
 .tpl-empty { color: var(--muted); font-weight: 400; font-style: italic; }
+
+/* Popup spacing: subtitle under the heading, then even gaps between stacked fields. */
+.modal-card h3:has(+ .modal-sub) { margin-bottom: 4px; }
+.modal-card .modal-sub { margin: 0 0 20px; }
+.modal-card > label.f, .modal-card > .row { margin-bottom: 14px; }
+.modal-card > .row { gap: 12px 14px; }
+/* Keyboard focus on buttons: soft lavender ring instead of the browser's white outline. */
+button:focus { outline: none; }
+button:focus-visible { outline: none; box-shadow: 0 0 0 3px #c8c6ff59; }

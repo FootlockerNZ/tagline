@@ -1775,7 +1775,7 @@ function dropPrices(list) {
   let round = 'none';
   const card = modal(`
     <h3>Edit price</h3>
-    <p class="hint" style="margin-top:-6px">${list.length} listing${list.length > 1 ? 's' : ''} selected</p>
+    <p class="hint modal-sub">${list.length} listing${list.length > 1 ? 's' : ''} selected</p>
     <div class="dp-field">
       <span class="dp-label">Drop by</span>
       <div class="dp-pct">
@@ -1932,7 +1932,7 @@ function withdrawListing(item) {
   const card = modal(`
     <h3>Withdraw this listing?</h3>
     <div class="hero">${item.picture ? `<img src="${esc(item.picture)}" />` : ''}<div><b>${esc(item.title)}</b><br/><small style="color:var(--muted)">#${item.listingId} · ${esc(item.nickname)}</small></div></div>
-    <div class="seg" id="wdType" style="margin:12px 0"><button data-t="0" class="on">Didn't sell</button><button data-t="1">Sold elsewhere</button></div>
+    <div class="seg" id="wdType" style="margin:0 0 16px"><button data-t="0" class="on">Didn't sell</button><button data-t="1">Sold elsewhere</button></div>
     <label class="f" id="wdReasonWrap">Reason (optional)<input id="wdReason" maxlength="255" placeholder="e.g. No longer available" /></label>
     <label class="f hidden" id="wdPriceWrap">Sale price $ (optional)<input id="wdPrice" type="number" min="0" step="0.01" /></label>
     <p class="hint">It comes off Trade Me straight away. This can't be undone.</p>
@@ -1987,7 +1987,7 @@ async function editListing(item) {
     `<label class="f">${label}<input id="ed${k}" type="number" step="0.01" min="0" value="${L[k] ?? ''}" ${lock(k)} /></label>`;
   card = modal(`
     <h3>Edit listing</h3>
-    <p class="hint" style="margin-top:-6px">#${item.listingId} · ${esc(item.nickname)}</p>
+    <p class="hint modal-sub">#${item.listingId} · ${esc(item.nickname)}</p>
     <label class="f"><span>Title <span class="counter" id="edTitleN"></span></span><input id="edTitle" value="${esc(L.Title || '')}" ${lock('Title')} /></label>
     <div class="row">
       ${num('BuyNowPrice', 'Buy Now ($)')}
@@ -2425,7 +2425,7 @@ function previewTemplates(p) {
   const shipErr = shipRefError(p);
   const card = modal(`
     <h3>Listing preview</h3>
-    <p class="hint" style="margin:-10px 0 16px">${esc(p.name)} · Nike Dunk Low "Panda" DD1391-100, US 10${afterpay ? ' · Afterpay on' : ''}</p>
+    <p class="hint modal-sub">${esc(p.name)} · Nike Dunk Low "Panda" DD1391-100, US 10${afterpay ? ' · Afterpay on' : ''}</p>
     <div class="tpl-prev">
       <div class="tpl-prev-label">Title <span class="${over ? 'tpl-over' : ''}">${title.length}/80${over ? ' · too long' : ''}</span></div>
       <div class="tpl-prev-title">${title ? esc(title) : '<span class="tpl-empty">Title template is empty</span>'}</div>
