@@ -89,7 +89,11 @@ Never share your consumer secret or commit it anywhere. Tagline stores it encryp
 
 ---
 
-## Develop
+## For developers
+
+*Only needed if you are changing Tagline's code. To just use the app, follow the install and setup steps above.*
+
+### Run from source
 
 Needs [Node.js](https://nodejs.org) 20 or later.
 
@@ -98,7 +102,7 @@ npm install
 npm start
 ```
 
-## Release a new version
+### Release a new version
 
 1. Bump `version` in `package.json` and commit.
 2. Tag and push: `git tag v1.1.0 && git push origin main v1.1.0`.
