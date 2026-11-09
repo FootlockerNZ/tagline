@@ -3,3 +3,7 @@ dist/
 .preview/
 *.log
 .env
+.env.*
+settings.json
+*.pem
+*.key

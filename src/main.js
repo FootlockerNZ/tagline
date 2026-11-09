@@ -75,7 +75,7 @@ handle('update:check', async () => {
     available: !!latest && r.isUpdateAvailable !== false && latest !== app.getVersion(),
     // macOS only installs updates for Apple-signed apps; until then, download the new .dmg by hand.
     manual: process.platform === 'darwin',
-    url: 'https://github.com/FootlockerNZ/trademe-lister/releases/latest',
+    url: 'https://github.com/FootlockerNZ/tagline/releases/latest',
   };
 });
 handle('update:download', async () => {

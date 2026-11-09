@@ -25,9 +25,9 @@ const DEFAULTS = {
   isBrandNew: true,
   allowOffers: false, // Trade Me "Make an Offer"
   category: { number: '', path: '' },
-  titleTemplate: '{brand} {name} {sku} US{size}',
+  titleTemplate: '',
   descriptionTemplate:
-    '{brand} {name}\r\nStyle code: {sku}\r\nSize: US {size}\r\nCondition: {condition}\r\n\r\n100% authentic. Ships next business day.\r\nShipping: $8 nationwide, $13 rural.',
+    '',
   history: [], // { listingId, title, sku, accountNickname, env, price, at }
   // Listing sections: each has its own category + defaults. Seeded from the fields above on first run.
   profiles: [],
@@ -51,8 +51,8 @@ function seedProfiles(s) {
       id: 'collectables',
       name: 'Collectables',
       category: { number: '', path: '' },
-      titleTemplate: '{brand} {name} {sku}',
-      descriptionTemplate: '{brand} {name}\r\nCondition: {condition}\r\n\r\n100% authentic. Ships next business day.\r\nShipping: $8 nationwide, $13 rural.',
+      titleTemplate: '',
+      descriptionTemplate: '',
     },
   ];
 }

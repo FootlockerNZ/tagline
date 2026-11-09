@@ -19,7 +19,7 @@
   "productName": "Tagline",
   "repository": {
     "type": "git",
-    "url": "https://github.com/FootlockerNZ/trademe-lister.git"
+    "url": "https://github.com/FootlockerNZ/tagline.git"
   },
   "build": {
     "appId": "nz.footlocker.tagline",
@@ -47,7 +47,7 @@
       {
         "provider": "github",
         "owner": "FootlockerNZ",
-        "repo": "trademe-lister",
+        "repo": "tagline",
         "releaseType": "release"
       }
     ],
