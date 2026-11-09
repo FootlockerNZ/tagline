@@ -1780,7 +1780,7 @@ function dropPrices(list) {
       <span class="dp-label">Drop by</span>
       <div class="dp-pct">
         <div class="seg" id="dpQuick">${[5, 10, 15, 20, 25].map((n) => `<button data-p="${n}" class="${n === pct ? 'on' : ''}">${n}%</button>`).join('')}</div>
-        <div class="dp-custom"><input id="dpPct" type="number" min="1" max="90" step="0.5" value="${pct}" /><span>%</span></div>
+        <div class="dp-custom"><input id="dpPct" type="number" min="1" max="90" step="1" value="${pct}" /><span>%</span></div>
       </div>
     </div>
     <div class="dp-field">
@@ -2001,7 +2001,9 @@ async function editListing(item) {
     <label class="f"><span>Description <span class="counter" id="edDescN"></span></span><textarea id="edDesc" rows="9" ${lock('Description')}>${esc(desc)}</textarea></label>
     ${locked.size ? `<p class="hint">Locked by Trade Me right now: ${[...(L.ImmutableFields || [])].map(esc).join(', ')}</p>` : ''}
     <p class="hint" id="edMsg" style="color:var(--red)"></p>
-    <div class="actions"><button class="btn ghost" id="cancel">Cancel</button><button class="btn primary" id="go">Save changes</button></div>`);
+    <div class="actions"><button class="btn" id="edDrop" style="margin-right:auto">Edit price</button><button class="btn ghost" id="cancel">Cancel</button><button class="btn primary" id="go">Save changes</button></div>`);
+  // Jumps to the Edit price popup for just this listing (drop by %, rounding, or type a price).
+  $('#edDrop', card).onclick = () => (closeModal(), dropPrices([item]));
   const counts = () => {
     const over = overCount($('#edTitleN', card), $('#edTitle', card), $('#edTitle', card).value.trim().length, 80) | overCount($('#edDescN', card), $('#edDesc', card), $('#edDesc', card).value.length, 2048);
     $('#go', card).disabled = !!over;

@@ -316,7 +316,11 @@ details.comps { margin-top: 10px; padding-top: 10px; }
 .dp-label { font-size: 12px; color: var(--muted); font-weight: 500; }
 .dp-pct { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .modal-card .seg { background: var(--field); }
-.dp-custom { display: flex; align-items: center; background: var(--field); border-radius: 14px; padding: 0 12px 0 4px; height: 44px; }
+.dp-custom { display: flex; align-items: center; background: var(--field); border: 1px solid transparent; border-radius: 14px; padding: 0 12px 0 4px; height: 44px; transition: border-color .15s, box-shadow .15s; }
+.dp-custom:focus-within { border-color: var(--lavender); box-shadow: 0 0 0 3px #c8c6ff26; }
+.dp-custom input:focus { border: 0; box-shadow: none; }
+.dp-custom input { -moz-appearance: textfield; }
+.dp-custom input::-webkit-outer-spin-button, .dp-custom input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .dp-custom input { width: 64px; border: 0; background: none; text-align: right; padding: 0 4px; height: 100%; }
 .dp-custom span { color: var(--muted); }
 .dp-field .seg button { white-space: nowrap; }
