@@ -399,7 +399,6 @@ function renderNew() {
   const accs = envAccounts();
   view.innerHTML = `
   <h1>New listing</h1>
-  <p class="sub">Punch in a SKU, check the details, list it.</p>
   <div class="top-picks">
     <div class="seg wrap-seg" id="profileSeg">
       ${profList(F.accountId).map((p) => `<button data-p="${esc(p.id)}" class="${p.id === F.profileId ? 'on' : ''}">${esc(p.name)}</button>`).join('')}
@@ -1456,7 +1455,6 @@ function renderRelist() {
   const sel = pending.filter((i) => R.selected.has(i.listingId));
   view.innerHTML = `
     <h1>Relist</h1>
-    <p class="sub">Unsold listings that haven't been relisted yet. Trade Me keeps these for 45 days. Archived listings are never relisted from the app.</p>
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
       <select id="rlAcc" style="width:auto;min-width:200px">${accs.map((a) => `<option value="${a.id}" ${a.id === R.accountId ? 'selected' : ''}>${esc(a.nickname)}</option>`).join('') || '<option>No accounts</option>'}</select>
       <div class="seg" id="rlView"><button data-v="0" class="${arch ? '' : 'on'}">Unsold</button><button data-v="1" class="${arch ? 'on' : ''}">Archived (${archived.length})</button></div>
@@ -1595,7 +1593,7 @@ function confirmRelist(list) {
     R.selected = new Set(list.map((i) => i.listingId));
     renderRelist();
     try {
-      const results = await api.relistRun({ accountId: R.accountId, ids: list.map((i) => i.listingId) });
+      const results = await api.relistRun({ accountId: R.accountId, ids: list.map((i) => i.listingId), meta: Object.fromEntries(list.map((i) => [i.listingId, { title: i.title, price: i.price, picture: i.picture }])) });
       results.forEach((r) => (R.results[r.id] = r));
       const ok = results.filter((r) => r.ok).length;
       toast(`${ok} relisted${results.length - ok ? `, ${results.length - ok} failed` : ''}`);
@@ -1660,7 +1658,7 @@ async function loadLive() {
 function renderLive() {
   const accs = envAccounts();
   LIVE.scope = pickScope(LIVE.scope);
-  const fromApp = new Set((S.history || []).map((h) => +h.listingId));
+  const fromApp = new Set((S.history || []).filter((h) => !h.action || h.action === 'listed' || h.action === 'relisted').map((h) => +h.listingId));
   const q = LIVE.q.trim().toLowerCase();
   const items = (LIVE.items || []).filter((i) => !q || `${i.title} ${i.sku} ${i.listingId}`.toLowerCase().includes(q));
   const showAcc = LIVE.scope === 'all' && accs.length > 1;
@@ -1673,7 +1671,6 @@ function renderLive() {
 
   view.innerHTML = `
     <h1>Live</h1>
-    <p class="sub">Everything you have for sale right now, listed from this app or not.</p>
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
       <select id="liveAcc" style="width:auto;min-width:200px">
         <option value="all" ${LIVE.scope === 'all' ? 'selected' : ''}>All accounts</option>
@@ -1887,7 +1884,7 @@ async function runPriceDrops(rows) {
       const next = { ...L, [field]: r.to };
       // Buy Now can't sit under the start price, so a Buy Now-only listing moves both.
       if (field === 'BuyNowPrice' && L.StartPrice && L.StartPrice > r.to && !L.ReservePrice) next.StartPrice = r.to;
-      await api.editListing({ accountId: r.i.accountId, listing: next });
+      await api.editListing({ accountId: r.i.accountId, listing: next, before: L, thumb: r.i.picture });
       r.i[field === 'BuyNowPrice' ? 'buyNow' : 'start'] = r.to;
       LIVE.status[id] = { ok: true, text: `${dollars(r.from)} → ${dollars(r.to)}` };
       LIVE.selected.delete(id);
@@ -1946,7 +1943,7 @@ function withdrawListing(item) {
     $('#go', card).disabled = $('#cancel', card).disabled = true;
     $('#go', card).textContent = 'Withdrawing…';
     try {
-      await api.withdrawListing({ accountId: item.accountId, listingId: item.listingId, sold, salePrice: +$('#wdPrice', card).value || 0, reason: $('#wdReason', card).value.trim() });
+      await api.withdrawListing({ accountId: item.accountId, listingId: item.listingId, sold, salePrice: +$('#wdPrice', card).value || 0, reason: $('#wdReason', card).value.trim(), meta: { title: item.title, price: item.buyNow || item.start || item.price, picture: item.picture } });
       closeModal();
       toast('Listing withdrawn');
       LIVE.items = (LIVE.items || []).filter((i) => i.listingId !== item.listingId);
@@ -2021,7 +2018,7 @@ async function editListing(item) {
     $('#go', card).disabled = $('#cancel', card).disabled = true;
     $('#go', card).textContent = 'Saving…';
     try {
-      await api.editListing({ accountId: item.accountId, listing: next });
+      await api.editListing({ accountId: item.accountId, listing: next, before: L, thumb: item.picture });
       closeModal();
       toast('Listing updated');
       dataChanged('live');
@@ -2078,7 +2075,6 @@ function renderSold() {
 
   view.innerHTML = `
     <h1>Sold</h1>
-    <p class="sub">What sold, how it was paid, and what you actually take home.</p>
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
       <select id="soldAcc" style="width:auto;min-width:200px">
         <option value="all" ${SOLD.scope === 'all' ? 'selected' : ''}>All accounts</option>
@@ -2244,7 +2240,6 @@ function renderQuestions() {
 
   view.innerHTML = `
     <h1>Questions</h1>
-    <p class="sub">Questions on your listings. Answer straight from here — the buyer gets notified.</p>
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
       <select id="qAcc" style="width:auto;min-width:200px">${accs.map((a) => `<option value="${a.id}" ${a.id === Q.accountId ? 'selected' : ''}>${esc(a.nickname)}</option>`).join('') || '<option>No accounts</option>'}</select>
       <button class="btn" id="qRefresh" ${Q.loading || !Q.accountId ? 'disabled' : ''}>${Q.loading ? 'Loading…' : 'Refresh'}</button>
@@ -2389,7 +2384,7 @@ async function sendAnswer(listing, qid) {
   Q.sending[qid] = true;
   renderQuestions();
   try {
-    const updated = await api.answerQuestion({ accountId: Q.accountId, listingId: listing.listingId, questionId: qid, answer: text });
+    const updated = await api.answerQuestion({ accountId: Q.accountId, listingId: listing.listingId, questionId: qid, answer: text, meta: { title: listing.title, picture: listing.picture } });
     const q = listing.questions.find((x) => x.id === qid);
     Object.assign(q, { answer: updated.answer || text, answerDate: updated.answerDate || new Date().toISOString() });
     delete Q.drafts[qid];
@@ -2406,18 +2401,77 @@ async function sendAnswer(listing, qid) {
 }
 
 /* ---------- HISTORY ---------- */
-function renderHistory() {
+// Every action taken from the app. Entries from before the activity log have no action: they were listings.
+const H_ACTIONS = {
+  listed: { label: 'Listed', group: 'listed', tone: 'green' },
+  price: { label: 'Price change', group: 'price', tone: 'lav' },
+  edited: { label: 'Edited', group: 'edited', tone: 'lav' },
+  withdrawn: { label: 'Withdrawn', group: 'withdrawn', tone: 'red' },
+  'sold-elsewhere': { label: 'Sold elsewhere', group: 'withdrawn', tone: 'sand' },
+  relisted: { label: 'Relisted', group: 'relisted', tone: 'green' },
+  'relist-failed': { label: 'Relist failed', group: 'relisted', tone: 'red' },
+  archived: { label: 'Archived', group: 'archived', tone: '' },
+  unarchived: { label: 'Unarchived', group: 'archived', tone: '' },
+  answered: { label: 'Answered question', group: 'answered', tone: 'lav' },
+  'account-added': { label: 'Account added', group: 'accounts', tone: '' },
+  'account-removed': { label: 'Account removed', group: 'accounts', tone: 'red' },
+};
+const H_FILTERS = [['all', 'All'], ['listed', 'Listed'], ['price', 'Prices'], ['edited', 'Edits'], ['withdrawn', 'Withdrawn'], ['relisted', 'Relisted'], ['archived', 'Archived'], ['answered', 'Questions'], ['accounts', 'Accounts']];
+const H = { filter: 'all', q: '' };
+async function renderHistory() {
+  try {
+    S = await api.getSettings();
+  } catch {}
+  if (current !== 'history') return;
+  const all = (S.history || []).map((h) => ({ ...h, action: h.action || 'listed' }));
+  const q = H.q.trim().toLowerCase();
+  const rows = all.filter(
+    (h) => (H.filter === 'all' || H_ACTIONS[h.action]?.group === H.filter) && (!q || `${h.title} ${h.sku} ${h.listingId} ${h.accountNickname} ${h.detail}`.toLowerCase().includes(q)),
+  );
+  const day = (iso) => new Date(iso).toLocaleDateString('en-NZ', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const time = (iso) => new Date(iso).toLocaleTimeString('en-NZ', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
+  const what = (h) => {
+    if (h.from != null && h.to != null && h.from !== h.to) return `${dollars(h.from)} → ${dollars(h.to)}`;
+    if (h.detail) return esc(h.detail);
+    return h.price ? dollars(h.price) : '';
+  };
+  let lastDay = '';
+  const list = rows
+    .map((h) => {
+      const a = H_ACTIONS[h.action] || { label: h.action, tone: '' };
+      const d = day(h.at);
+      const head = d !== lastDay ? `<div class="h-day">${d}</div>` : '';
+      lastDay = d;
+      const isAccount = h.action.startsWith('account-');
+      return `${head}<div class="item h-row">
+        ${isAccount ? '<span class="rl-noimg"></span>' : h.thumb ? `<img src="${esc(h.thumb)}" alt=""/>` : '<span class="rl-noimg"></span>'}
+        <div class="grow">
+          <b>${isAccount ? esc(h.accountNickname) : esc(h.title || `Listing #${h.listingId}`)}</b>
+          <small>${[what(h), !isAccount && h.listingId ? `#${h.listingId}` : '', !isAccount ? esc(h.accountNickname) : '', h.env === 'sandbox' ? 'sandbox' : ''].filter(Boolean).join(' · ')}</small>
+        </div>
+        <span class="h-tag ${a.tone}">${esc(a.label)}</span>
+        <span class="h-time">${time(h.at)}</span>
+        ${h.url && !isAccount ? `<button class="btn small" data-url="${esc(h.url)}">Open</button>` : '<span class="h-open-gap"></span>'}
+      </div>`;
+    })
+    .join('');
   view.innerHTML = `
-    <h1>History</h1><p class="sub">Listings made from this app.</p>
-    <div class="list">${
-      S.history
-        .map(
-          (h) => `<div class="item">${h.thumb ? `<img src="${h.thumb}"/>` : ''}<div class="grow"><b>${esc(h.title)}</b>
-          <small>#${h.listingId} · ${esc(h.accountNickname)}${h.env === 'sandbox' ? ' · sandbox' : ''} · $${h.price} · ${new Date(h.at).toLocaleString()}</small></div>
-          <button class="btn small" data-url="${esc(h.url)}">Open</button></div>`,
-        )
-        .join('') || '<div class="empty">Nothing listed yet.</div>'
-    }</div>`;
+    <h1>History</h1>
+    <div class="h-bar">
+      <div class="seg" id="hFilter">${H_FILTERS.map(([k, l]) => `<button data-f="${k}" class="${H.filter === k ? 'on' : ''}">${l}</button>`).join('')}</div>
+      <input id="hSearch" placeholder="Search title, SKU, listing #" value="${esc(H.q)}" spellcheck="false" />
+    </div>
+    <div class="list">${list || `<div class="empty">${all.length ? 'Nothing matches.' : 'Nothing yet. Listings, price changes, withdrawals, relists and more show up here.'}</div>`}</div>`;
+  $$('#hFilter button').forEach((b) => (b.onclick = () => ((H.filter = b.dataset.f), renderHistory())));
+  const search = $('#hSearch');
+  search.oninput = debounce(() => {
+    H.q = search.value;
+    renderHistory().then(() => {
+      const s = $('#hSearch');
+      s?.focus();
+      s?.setSelectionRange(s.value.length, s.value.length);
+    });
+  }, 200);
   $$('[data-url]').forEach((b) => (b.onclick = () => api.openExternal(b.dataset.url)));
 }
 
@@ -2446,7 +2500,7 @@ function renderSettings() {
   const c = S.consumer[S.env];
   view.innerHTML = `
   <div class="settings">
-    <h1>Settings</h1><p class="sub">Accounts and connections. Changes save automatically.</p>
+    <h1>Settings</h1>
 
     <div class="card">
       <h2>Accounts</h2>
@@ -2641,7 +2695,6 @@ function renderDefaults() {
       <div class="page-head">
         <div>
           <h1>Listing defaults</h1>
-          <p class="sub">What each section fills in on a new listing for this account, and what it costs. Changes save automatically.</p>
         </div>
         ${accs.length ? `<label class="acct-pick"><span>Account</span><select id="defAccSel">${accs.map((a) => `<option value="${a.id}" ${a.id === defAcc ? 'selected' : ''}>${esc(a.nickname)}</option>`).join('')}</select></label>` : ''}
       </div>

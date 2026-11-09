@@ -164,9 +164,11 @@ function getAccount(id) {
   return a && { ...a, secret: dec(a.secret) };
 }
 
+// Activity log: every action taken from the app. entry.action is one of
+// listed | edited | price | withdrawn | sold-elsewhere | relisted | relist-failed | archived | unarchived | answered | account-added | account-removed.
 function addHistory(entry) {
   const s = load();
-  save({ ...s, history: [entry, ...s.history].slice(0, 500) });
+  save({ ...s, history: [{ at: new Date().toISOString(), ...entry }, ...s.history].slice(0, 3000) });
 }
 
 // Archive (entries = [{ listingId, ...snapshot }]) or unarchive (entries = [{ listingId }]).

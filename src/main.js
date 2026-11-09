@@ -41,6 +41,10 @@ const account = (id) => {
   if (!a) throw new Error('Pick a Trade Me account first (Settings → Accounts).');
   return a;
 };
+// History entry for something done to a listing on this account.
+const logAction = (acc, action, fields) =>
+  store.addHistory({ action, accountNickname: acc.nickname, env: acc.env, ...(fields.listingId ? { url: tm.listingUrl(acc.env, fields.listingId) } : {}), ...fields });
+const priceOf = (l) => l?.BuyNowPrice || l?.StartPrice || null;
 
 // Wrap handlers so errors reach the renderer as { error } instead of an opaque rejection.
 const handle = (ch, fn) =>
@@ -90,9 +94,16 @@ handle('settings:update', (patch) => (store.updateSettings(patch), store.publicS
 
 handle('account:login', async (env) => {
   const r = await tm.login(env, win);
+  const added = store.load().accounts.find((a) => a.env === env && String(a.memberId) === String(r?.memberId ?? r?.account?.memberId));
+  store.addHistory({ action: 'account-added', accountNickname: added?.nickname || r?.nickname || r?.account?.nickname || '', env });
   return { ...r, settings: store.publicSettings() };
 });
-handle('account:remove', (id) => (store.removeAccount(id), store.publicSettings()));
+handle('account:remove', (id) => {
+  const acc = store.getAccount(id);
+  store.removeAccount(id);
+  if (acc) store.addHistory({ action: 'account-removed', accountNickname: acc.nickname, env: acc.env });
+  return store.publicSettings();
+});
 
 handle('sku:lookup', (raw, brandOverride) => {
   const s = sku.normalize(raw);
@@ -202,6 +213,7 @@ handle('listing:submit', async ({ accountId, listing, photos, meta }) => {
   if (!r.Success) throw new Error(validationMessage(r));
   const url = tm.listingUrl(acc.env, r.ListingId);
   store.addHistory({
+    action: 'listed',
     listingId: r.ListingId,
     url,
     title: listing.Title,
@@ -248,11 +260,12 @@ handle('relist:archive', ({ accountId, items, archived }) => {
   const acc = account(accountId);
   const pick = ({ listingId, title, price, isBuyNow, endDate, picture, url }) => ({ listingId: +listingId, env: acc.env, memberId: acc.memberId, title, price, isBuyNow, endDate, picture, url });
   store.setArchived(items.map(pick), archived);
+  for (const i of items) logAction(acc, archived ? 'archived' : 'unarchived', { listingId: +i.listingId, title: i.title || store.load().relistArchive[i.listingId]?.title, price: i.price, thumb: i.picture });
   return store.publicSettings();
 });
 
 // Relists one at a time so a single failure doesn't stop the rest.
-handle('relist:run', async ({ accountId, ids }) => {
+handle('relist:run', async ({ accountId, ids, meta = {} }) => {
   const acc = account(accountId);
   const results = [];
   for (const [n, id] of ids.entries()) {
@@ -264,7 +277,9 @@ handle('relist:run', async ({ accountId, ids }) => {
     } catch (err) {
       results.push({ id, ok: false, error: err.message });
     }
-    win?.webContents.send('relist-progress', { id, n: n + 1, total: ids.length, result: results.at(-1) });
+    const res = results.at(-1), m = meta[id] || {};
+    logAction(acc, res.ok ? 'relisted' : 'relist-failed', { listingId: res.ok ? res.newId : id, oldListingId: id, title: m.title, price: m.price, thumb: m.picture, detail: res.ok ? `Was #${id}` : res.error });
+    win?.webContents.send('relist-progress', { id, n: n + 1, total: ids.length, result: res });
   }
   return results;
 });
@@ -392,21 +407,37 @@ handle('live:list', async (accountIds) => {
 handle('listing:get', async ({ accountId, listingId }) => tm.api(account(accountId), 'GET', `/v1/Selling/Listings/${listingId}.json`));
 
 // Edit sends the whole form back: anything left out is reset, so `listing` is the fetched form with changes applied.
-handle('listing:edit', async ({ accountId, listing }) => {
+handle('listing:edit', async ({ accountId, listing, before, thumb }) => {
   // Drop the read-only extras the retrieve call adds; everything else goes back as it was.
   const { ImmutableFields, AvailablePromotions, AvailablePaymentMethodsForEdit, Photos, StartDate, IsSafePaymentsCompliant, ...body } = listing;
-  const r = await tm.api(account(accountId), 'POST', '/v1/Selling/Edit.json', body);
+  const acc = account(accountId);
+  const r = await tm.api(acc, 'POST', '/v1/Selling/Edit.json', body);
   if (!r.Success) throw new Error(validationMessage(r));
+  // Log what changed. Only a price change is logged as 'price'; anything else is 'edited' with the field names.
+  const FIELDS = { Title: 'title', Description: 'description', SKU: 'SKU', BuyNowPrice: 'Buy Now price', StartPrice: 'start price', ReservePrice: 'reserve', Quantity: 'quantity', IsCounterOffersAllowed: 'offers' };
+  const changed = before ? Object.keys(FIELDS).filter((k) => JSON.stringify(before[k] ?? null) !== JSON.stringify(listing[k] ?? null)) : [];
+  const onlyPrice = changed.length && changed.every((k) => /Price$/.test(k));
+  const from = priceOf(before), to = priceOf(listing);
+  logAction(acc, onlyPrice ? 'price' : 'edited', {
+    listingId: listing.ListingId, title: listing.Title, price: to, thumb,
+    ...(from !== to ? { from, to } : {}),
+    detail: onlyPrice ? '' : changed.length ? 'Changed ' + changed.map((k) => FIELDS[k]).join(', ') : '',
+  });
   return true;
 });
 
 // Take a live listing down. sold: true = sold elsewhere (optional salePrice), false = just withdrawn (optional reason).
-handle('listing:withdraw', async ({ accountId, listingId, sold, salePrice, reason }) => {
+handle('listing:withdraw', async ({ accountId, listingId, sold, salePrice, reason, meta = {} }) => {
   const body = { ListingId: listingId, Type: sold ? 1 : 2 };
   if (sold && salePrice > 0) body.SalePrice = salePrice;
   if (!sold && reason) body.Reason = String(reason).slice(0, 255);
-  const r = await tm.api(account(accountId), 'POST', '/v1/Selling/Withdraw.json', body);
+  const acc = account(accountId);
+  const r = await tm.api(acc, 'POST', '/v1/Selling/Withdraw.json', body);
   if (!r.Success) throw new Error(r.Description || 'Trade Me would not withdraw the listing.');
+  logAction(acc, sold ? 'sold-elsewhere' : 'withdrawn', {
+    listingId, title: meta.title, price: sold && salePrice > 0 ? salePrice : meta.price, thumb: meta.picture,
+    detail: sold ? (salePrice > 0 ? `Sold elsewhere for ${salePrice}` : 'Sold elsewhere') : reason || '',
+  });
   return true;
 });
 
@@ -513,8 +544,10 @@ handle('questions:list', async (accountId) => {
   }
   return [...withQuestions, ...koru];
 });
-handle('questions:answer', async ({ accountId, listingId, questionId, answer }) => {
-  const r = await tm.api(account(accountId), 'POST', `/v1/Listings/${listingId}/Questions/${questionId}/AnswerQuestion.json`, { answer: String(answer).slice(0, 500) });
+handle('questions:answer', async ({ accountId, listingId, questionId, answer, meta = {} }) => {
+  const acc = account(accountId);
+  const r = await tm.api(acc, 'POST', `/v1/Listings/${listingId}/Questions/${questionId}/AnswerQuestion.json`, { answer: String(answer).slice(0, 500) });
+  logAction(acc, 'answered', { listingId, title: meta.title, thumb: meta.picture, detail: String(answer).slice(0, 140) });
   return mapQuestion({ ...r, ListingId: r.ListingId || listingId });
 });
 
