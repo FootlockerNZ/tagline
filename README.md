@@ -2,7 +2,7 @@
 
 Desktop app for listing on Trade Me fast. Set up a section for each kind of thing you sell, with its
 own category, templates, shipping and payment, then list in seconds. Manage everything after that from
-one place: live listings (edit, withdraw, bulk price drops, views and watchers), relists, sales, buyer
+one place: live listings (edit, withdraw, bulk price edits, views and watchers), relists, sales, buyer
 questions and a full history. Optional product lookup by SKU, size conversion and price comparisons
 help when you sell branded stock such as sneakers.
 
@@ -12,7 +12,7 @@ Your Trade Me API keys, accounts and tokens are stored on your own computer only
 
 | | |
 |---|---|
-| **New listing**: pick a section, fill in the item, see fees and your payout, list.<br><img src="docs/screenshots/new.png" width="420"> | **Live**: everything for sale, with views, watchers, edits and bulk price drops.<br><img src="docs/screenshots/live.png" width="420"> |
+| **New listing**: pick a section, fill in the item, see fees and your payout, list.<br><img src="docs/screenshots/new.png" width="420"> | **Live**: everything for sale, with views, watchers, edits and bulk price changes.<br><img src="docs/screenshots/live.png" width="420"> |
 | **Relist**: unsold listings to relist in one go, or archive.<br><img src="docs/screenshots/relist.png" width="420"> | **Sold**: what sold, fees and your payout.<br><img src="docs/screenshots/sold.png" width="420"> |
 | **Questions**: answer buyer questions without leaving the app.<br><img src="docs/screenshots/questions.png" width="420"> | **Defaults**: per-section category, templates, shipping and payment.<br><img src="docs/screenshots/defaults.png" width="420"> |
 | **History**: every listing, price change, withdrawal, relist and more.<br><img src="docs/screenshots/history.png" width="420"> | **Settings**: accounts, API keys, product lookup and updates.<br><img src="docs/screenshots/settings.png" width="420"> |

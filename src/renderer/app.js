@@ -1727,7 +1727,7 @@ function renderLive() {
                   <p class="hint">Listings on Trade Me's newer platform may not come through the API, same as Sold.</p>
                   <div class="bar">
                     <div class="msg" id="liveMsg">${sel.length ? `${sel.length} selected` : 'Tick listings to change them together.'}</div>
-                    <button class="btn primary" id="dropBtn" ${sel.length && !LIVE.running ? '' : 'disabled'}>${LIVE.running ? 'Updating…' : `Drop price (${sel.length})`}</button>
+                    <button class="btn primary" id="dropBtn" ${sel.length && !LIVE.running ? '' : 'disabled'}>${LIVE.running ? 'Updating…' : `Edit price (${sel.length})`}</button>
                   </div>`
             }`
     }`;
@@ -1774,7 +1774,7 @@ function dropPrices(list) {
   let pct = 10;
   let round = 'none';
   const card = modal(`
-    <h3>Drop price</h3>
+    <h3>Edit price</h3>
     <p class="hint" style="margin-top:-6px">${list.length} listing${list.length > 1 ? 's' : ''} selected</p>
     <div class="dp-field">
       <span class="dp-label">Drop by</span>
