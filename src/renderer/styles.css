@@ -332,7 +332,7 @@ details.comps { margin-top: 10px; padding-top: 10px; }
 .dp-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .dp-from { color: var(--muted); text-decoration: line-through; font-size: 13px; white-space: nowrap; }
 .dp-to { justify-self: end; display: flex; align-items: center; gap: 2px; color: var(--green); font-weight: 600; background: var(--panel); border: 1px solid transparent; border-radius: 10px; padding: 0 8px; height: 34px; cursor: text; }
-.dp-to input { width: 5ch; font-variant-numeric: tabular-nums; border: 0; background: none; color: inherit; font: inherit; text-align: right; padding: 0; height: 100%; -moz-appearance: textfield; }
+.dp-to input { width: 5ch; border: 0; background: none; color: inherit; font: inherit; font-variant-numeric: tabular-nums; text-align: right; padding: 0; height: 100%; -moz-appearance: textfield; }
 .dp-to input::-webkit-outer-spin-button, .dp-to input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .dp-to:focus-within { border-color: var(--lavender); }
 .dp-row.typed .dp-to { border-color: var(--lavender); }
