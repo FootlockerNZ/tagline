@@ -1,6 +1,6 @@
 {
   "name": "trademe-lister",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Fast shoe listing tool for Trade Me",
   "main": "src/main.js",
   "private": true,

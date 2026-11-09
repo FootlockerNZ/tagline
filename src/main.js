@@ -243,6 +243,14 @@ handle('relist:list', async (accountId) => {
   return out.sort((a, b) => (b.endDate || '').localeCompare(a.endDate || ''));
 });
 
+// Archive/unarchive relistable listings. `items` are the rows from relist:list (or just { listingId } to unarchive).
+handle('relist:archive', ({ accountId, items, archived }) => {
+  const acc = account(accountId);
+  const pick = ({ listingId, title, price, isBuyNow, endDate, picture, url }) => ({ listingId: +listingId, env: acc.env, memberId: acc.memberId, title, price, isBuyNow, endDate, picture, url });
+  store.setArchived(items.map(pick), archived);
+  return store.publicSettings();
+});
+
 // Relists one at a time so a single failure doesn't stop the rest.
 handle('relist:run', async ({ accountId, ids }) => {
   const acc = account(accountId);
@@ -250,6 +258,7 @@ handle('relist:run', async ({ accountId, ids }) => {
   for (const [n, id] of ids.entries()) {
     win?.webContents.send('relist-progress', { id, n: n + 1, total: ids.length });
     try {
+      if (store.isArchived(id)) throw new Error('Archived: unarchive it to relist.');
       const r = await tm.api(acc, 'POST', '/v1/Selling/Relist.json', { ListingId: id });
       results.push(r.Success ? { id, ok: true, newId: r.ListingId, url: tm.listingUrl(acc.env, r.ListingId) } : { id, ok: false, error: r.Description || 'Relist failed' });
     } catch (err) {
@@ -364,7 +373,9 @@ handle('live:list', async (accountIds) => {
           start: i.StartPrice || 0,
           maxBid: i.MaxBidAmount || 0,
           bids: i.BidCount || 0,
-          watchers: i.BidderAndWatchers ?? null,
+          // Trade Me leaves these out when they're 0.
+          views: i.ViewCount ?? 0,
+          watchers: i.BidderAndWatchers ?? 0,
           quantity: i.Quantity ?? i.RemainingQuantity ?? null,
           sku: i.SKU || '',
           startDate: tmDate(i.StartDate),

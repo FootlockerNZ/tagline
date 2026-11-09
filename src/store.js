@@ -33,6 +33,9 @@ const DEFAULTS = {
   profiles: [],
   accountProfiles: {}, // accountId → its own sections (falls back to `profiles`)
   lastProfileId: null,
+  // Listings archived from the Relist page: never relisted through the app.
+  // listingId → { env, memberId, title, price, picture, endDate, archivedAt }
+  relistArchive: {},
   trace: { token: '' }, // Trace (jointrace.co) bearer token for product lookup, encrypted
 };
 
@@ -70,7 +73,23 @@ function load() {
     cache = structuredClone(DEFAULTS);
   }
   if (!cache.profiles?.length) cache.profiles = seedProfiles(cache);
+  if (moveAfterpayBrackets(cache)) save(cache);
   return cache;
+}
+
+// One-off: "[{afterpay}]" in title templates becomes "{afterpay}", with the brackets moved into
+// the section's own Afterpay text ("[AfterPay Available]"), so they can be edited there.
+function moveAfterpayBrackets(s) {
+  let changed = false;
+  const sections = [...(s.profiles || []), ...Object.values(s.accountProfiles || {}).flat()];
+  for (const p of sections) {
+    if (!p || !/\[\{afterpay\}\]/.test(p.titleTemplate || '')) continue;
+    p.titleTemplate = p.titleTemplate.replace(/\[\{afterpay\}\]/g, '{afterpay}');
+    const text = (p.afterpayText ?? '').trim() || 'AfterPay Available';
+    p.afterpayText = /^\[.*\]$/.test(text) ? text : `[${text}]`;
+    changed = true;
+  }
+  return changed;
 }
 
 function save(next) {
@@ -105,6 +124,7 @@ function updateSettings(patch) {
   // Arrays are replaced wholesale; never let the renderer overwrite accounts/history.
   next.accounts = s.accounts;
   next.history = s.history;
+  next.relistArchive = s.relistArchive;
   // Only overwrite consumer secrets when a new one is supplied.
   for (const env of ['production', 'sandbox']) {
     const c = patch.consumer?.[env];
@@ -149,4 +169,16 @@ function addHistory(entry) {
   save({ ...s, history: [entry, ...s.history].slice(0, 500) });
 }
 
-module.exports = { load, publicSettings, updateSettings, consumer, traceToken, addAccount, removeAccount, getAccount, addHistory };
+// Archive (entries = [{ listingId, ...snapshot }]) or unarchive (entries = [{ listingId }]).
+function setArchived(entries, archived) {
+  const s = load();
+  const relistArchive = { ...s.relistArchive };
+  for (const e of entries) {
+    if (archived) relistArchive[e.listingId] = { ...e, archivedAt: new Date().toISOString() };
+    else delete relistArchive[e.listingId];
+  }
+  save({ ...s, relistArchive });
+}
+const isArchived = (listingId) => !!load().relistArchive[listingId];
+
+module.exports = { load, publicSettings, updateSettings, consumer, traceToken, addAccount, removeAccount, getAccount, addHistory, setArchived, isArchived };

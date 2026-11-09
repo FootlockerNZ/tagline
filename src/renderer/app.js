@@ -28,6 +28,20 @@ const debounce = (fn, ms) => {
   let h;
   return (...a) => (clearTimeout(h), (h = setTimeout(() => fn(...a), ms)));
 };
+// Shipping options as placeholders: {shippingName1} "Nationwide courier", {shippingValue1} "$8".
+const shipOptions = (shipping) => (shipping || []).filter((s) => s.method && s.price !== '' && s.price != null);
+const shipMoney = (v) => '$' + (Number.isInteger(+v) ? +v : (+v).toFixed(2));
+const shipVars = (shipping) =>
+  Object.fromEntries(shipOptions(shipping).flatMap((s, i) => [[`shippingName${i + 1}`, s.method], [`shippingValue${i + 1}`, shipMoney(s.price)]]));
+// Templates that point at a shipping option the section doesn't have, e.g. {shippingName3} with only 2.
+function shipRefError(p) {
+  const have = shipOptions(p.shipping).length;
+  const bad = [];
+  for (const [where, tpl] of [['title', p.titleTemplate], ['description', p.descriptionTemplate]])
+    for (const m of String(tpl || '').matchAll(/\{(shipping(?:Name|Value)(\d+))\}/g)) if (+m[2] > have || +m[2] < 1) bad.push(`{${m[1]}} in the ${where}`);
+  if (!bad.length) return '';
+  return `${[...new Set(bad)].join(', ')} refers to a shipping option that doesn't exist. This section has ${have} shipping option${have === 1 ? '' : 's'}.`;
+}
 // Empty placeholders take their attached text with them, so "US{size}" vanishes until a size is entered.
 // Line by line: an empty placeholder takes its attached text with it ("[{afterpay}]", "US{size}"),
 // stray separators left at a line's ends are trimmed, and a line that was only placeholders disappears.
@@ -351,8 +365,10 @@ const vars = () => ({
   sku: F.sku,
   size: sizeText(F.size),
   colour: F.colour,
-  afterpay: F.payment.afterpay ? 'AfterPay Available' : '',
+  // Per-section wording; blank falls back to the original text.
+  afterpay: F.payment.afterpay ? (P().afterpayText ?? 'AfterPay Available').trim() : '',
   condition: F.condition === 'new' ? 'Brand new' : 'Used',
+  ...shipVars(P().shipping),
 });
 
 function renderNew() {
@@ -363,7 +379,7 @@ function renderNew() {
   <h1>New listing</h1>
   <p class="sub">Punch in a SKU, check the details, list it.</p>
   <div class="top-picks">
-    <div class="seg" id="profileSeg">
+    <div class="seg wrap-seg" id="profileSeg">
       ${profList(F.accountId).map((p) => `<button data-p="${esc(p.id)}" class="${p.id === F.profileId ? 'on' : ''}">${esc(p.name)}</button>`).join('')}
     </div>
     <div class="acct-pick">
@@ -395,6 +411,8 @@ function renderNew() {
         </div>
         <div class="row">
           <label class="f">Model / name <input id="name" value="${esc(F.name)}" placeholder="e.g. Dunk Low Panda" /></label>
+        </div>
+        <div class="row">
           <label class="f"><span>Size (US) <span class="counter" id="euHint"></span></span><input id="size" value="${esc(F.size)}" placeholder="10, 8W or EU 44" /></label>
           <label class="f">Condition
             <select id="condition"><option value="new">Brand new</option><option value="used">Used</option></select>
@@ -476,25 +494,43 @@ function renderNew() {
 
   $('#condition').value = F.condition;
   // Switching section keeps the product + photos, re-applies that section's category and defaults.
-  $$('#profileSeg button').forEach(
-    (b) =>
-      (b.onclick = () => {
-        if (b.dataset.p === F.profileId) return;
-        Object.assign(F, profileFields(prof(b.dataset.p)));
-        // Remember the choice quietly — no "Saved" toast for just switching tabs.
-        S.lastProfileId = F.profileId;
-        api.updateSettings({ lastProfileId: F.profileId }).catch(() => {});
-        renderNew();
-      }),
-  );
+  const switchSection = (id) => {
+    if (id === F.profileId) return;
+    Object.assign(F, profileFields(prof(id)));
+    // Remember the choice quietly — no "Saved" toast for just switching tabs.
+    S.lastProfileId = F.profileId;
+    api.updateSettings({ lastProfileId: F.profileId }).catch(() => {});
+    renderNew();
+  };
+  $$('#profileSeg button').forEach((b) => (b.onclick = () => ((F.autoWomenFrom = null), switchSection(b.dataset.p))));
+  // A "W" in the size (8W, W8) switches to the women's section; taking it out switches back,
+  // but only if it was the W that switched you there.
+  const womenSection = () => profList(F.accountId).find((p) => p.id === 'womens') || profList(F.accountId).find((p) => /women/i.test(p.name));
+  const sizeSection = () => {
+    const ws = womenSection();
+    if (!ws) return;
+    const women = parseSize(F.size).women;
+    let to = null;
+    if (women && F.profileId !== ws.id) (F.autoWomenFrom = F.profileId), (to = ws.id);
+    else if (!women && F.autoWomenFrom && F.profileId === ws.id) (to = F.autoWomenFrom), (F.autoWomenFrom = null);
+    if (!to) return;
+    const from = F.autoWomenFrom;
+    const caret = $('#size').selectionStart;
+    switchSection(to);
+    F.autoWomenFrom = from; // profileFields doesn't touch it, but keep it explicit
+    const el = $('#size');
+    el.focus();
+    el.setSelectionRange(caret, caret);
+    toast(`Switched to ${prof(to).name}`);
+  };
   const bind = (id, key, after) =>
     $('#' + id).addEventListener('input', (e) => {
       F[key] = e.target.value;
       after?.();
     });
 
-  bind('name', 'name', refreshText);
-  bind('size', 'size', () => (refreshText(), prefillAttrs()));
+  bind('name', 'name', () => ((F.nameAuto = false), refreshText()));
+  bind('size', 'size', () => (sizeSection(), refreshText(), prefillAttrs()));
   // Typing in the brand box overrides auto-detect; clearing it hands control back.
   bind('customBrand', 'customBrand', () => ((F.brandTextDirty = F.customBrand.trim() !== ''), refreshText()));
   bind('condition', 'condition', refreshText);
@@ -508,8 +544,8 @@ function renderNew() {
   $('#title').addEventListener('input', (e) => ((F.title = e.target.value), (F.titleDirty = true), counts()));
   $('#desc').addEventListener('input', (e) => ((F.desc = e.target.value), (F.descDirty = true), counts()));
   $('#resetText').addEventListener('click', (e) => (e.preventDefault(), (F.titleDirty = F.descDirty = false), refreshText()));
-  $('#sku').addEventListener('input', debounce((e) => ((F.query = e.target.value), (F.brandTextDirty = false), lookup()), 450));
-  $('#sku').addEventListener('keydown', (e) => e.key === 'Enter' && ((F.query = e.target.value), (F.brandTextDirty = false), lookup()));
+  $('#sku').addEventListener('input', debounce((e) => (newQuery(e.target.value), lookup()), 450));
+  $('#sku').addEventListener('keydown', (e) => e.key === 'Enter' && (newQuery(e.target.value), lookup()));
   $('#brand').addEventListener('change', (e) => ((F.brand = e.target.value), (F.brandTextDirty = false), lookup()));
   $$('#offerSeg button').forEach(
     (b) =>
@@ -739,8 +775,13 @@ function renderShipCard() {
     box.innerHTML = `<div class="summary">
       ${sh.shipping.filter((s) => s.method).map((s) => `<div>${esc(s.method)} <b>${dollars(s.price)}</b></div>`).join('') || '<div>No shipping options set</div>'}
       <div>Pickup <b>${PICKUP_LABELS[sh.pickup]}</b></div>
-      <div id="shipOnce" ${multi ? '' : 'hidden'}>Multiple bought <b>Shipping charged ${sh.shipPer === 'item' ? 'per item' : 'once per order'}</b></div>
+      <div id="shipOnce" ${multi ? '' : 'hidden'}>Multiple bought
+        <span class="seg seg-sm" id="lShipPer"><button data-v="order" class="${sh.shipPer !== 'item' ? 'on' : ''}">Once per order</button><button data-v="item" class="${sh.shipPer === 'item' ? 'on' : ''}">Per item</button></span>
+      </div>
     </div>`;
+    $$('#lShipPer button', box).forEach(
+      (b) => (b.onclick = () => ((sh.shipPer = b.dataset.v), $$('#lShipPer button', box).forEach((x) => x.classList.toggle('on', x === b)))),
+    );
     return;
   }
   box.innerHTML = `
@@ -806,7 +847,9 @@ function renderBrand() {
 
 function refreshText() {
   if (!F.titleDirty) F.title = fill(P().titleTemplate, vars()).slice(0, 80);
-  if (!F.descDirty) F.desc = fill(P().descriptionTemplate, vars());
+  // Descriptions have their own Afterpay wording (no brackets by default).
+  if (!F.descDirty)
+    F.desc = fill(P().descriptionTemplate, { ...vars(), afterpay: F.payment.afterpay ? (P().afterpayDescText ?? 'AfterPay Available').trim() : '' });
   if ($('#title') && document.activeElement !== $('#title')) $('#title').value = F.title;
   if ($('#desc') && document.activeElement !== $('#desc')) $('#desc').value = F.desc;
   counts();
@@ -894,6 +937,23 @@ function counts() {
   tc.textContent = `${F.title.length}/80`;
   $('#descCount').textContent = `${F.desc.length}/2048`;
   $('#descCount').classList.toggle('over', F.desc.length > 2048);
+}
+
+// A different SKU/name in the box is a different product: drop what the last one filled in
+// (Trace's name and colour, hand edits to title/description) so nothing stale carries over.
+// A name you typed yourself is kept.
+function newQuery(q) {
+  if (q.trim() === String(F.query || '').trim()) return;
+  F.query = q;
+  F.brandTextDirty = false;
+  F.titleDirty = F.descDirty = false;
+  F.colour = '';
+  if (F.nameAuto) {
+    F.name = '';
+    F.nameAuto = false;
+    const el = $('#name');
+    if (el) el.value = '';
+  }
 }
 
 let lookupSeq = 0;
@@ -1001,6 +1061,7 @@ function applyTrace(i) {
   if (F.byName) F.sku = String(p.sku || '').toUpperCase().split(/[\/,\s]+/)[0] || '';
   const brandRe = new RegExp('^' + String(p.brand || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s+', 'i');
   F.name = p.title.replace(brandRe, '');
+  F.nameAuto = true;
   F.colour = p.colour;
   $('#name') && ($('#name').value = F.name);
   renderBrand();
@@ -1203,6 +1264,8 @@ function buildListing() {
   if (!F.category.number) errs.push('Pick a category.');
   if (!F.title.trim()) errs.push('Add a title.');
   if (!F.desc.trim()) errs.push('Add a description.');
+  const shipErr = shipRefError(P());
+  if (shipErr) errs.push(shipErr + ' Fix it under Defaults → Templates or Shipping.');
   const pay = [];
   if (F.payment.ping) pay.push(32);
   if (F.payment.afterpay) pay.push(64);
@@ -1321,19 +1384,18 @@ async function confirmList() {
       });
       S = await api.getSettings();
       dataChanged('live');
+      // Listed: clear the form straight away (same section, account, category and listing type)
+      // so the page never shows a product that's already live.
+      const keep = { accountId: F.accountId, category: F.category, attrs: F.attrs, catInfo: F.catInfo, type: F.type };
+      F = { ...freshForm(F.profileId, F.accountId), ...keep };
+      if (current === 'new') renderNew();
       modal(`
         <h3>Listed ✓</h3>
         <p>Listing <b>#${r.listingId}</b> is live.</p>
         <div class="actions"><button class="btn ghost" id="close">Close</button><button class="btn" id="open">Open on Trade Me</button><button class="btn primary" id="next">List another</button></div>`);
       $('#close').onclick = closeModal;
       $('#open').onclick = () => api.openExternal(r.url);
-      $('#next').onclick = () => {
-        closeModal();
-        const keep = { accountId: F.accountId, category: F.category, attrs: F.attrs, catInfo: F.catInfo, type: F.type };
-        F = { ...freshForm(F.profileId, F.accountId), ...keep };
-        renderNew();
-        $('#sku').focus();
-      };
+      $('#next').onclick = () => (closeModal(), $('#sku')?.focus());
     } catch (err) {
       $('#prog', card).textContent = err.message;
       $('#prog', card).style.color = 'var(--red)';
@@ -1360,27 +1422,35 @@ function renderRelist() {
     R.items = null;
   }
   const cutoff = Date.now() - R.days * 86400000;
-  const items = (R.items || []).filter((i) => !i.endDate || new Date(i.endDate) >= cutoff);
-  const pending = items.filter((i) => !R.results[i.listingId]?.ok);
+  const archive = S.relistArchive || {};
+  const acc = accs.find((a) => a.id === R.accountId);
+  // Archived listings for this account, newest archive first (kept even after Trade Me drops them).
+  const archived = Object.values(archive)
+    .filter((x) => acc && x.env === acc.env && +x.memberId === +acc.memberId)
+    .sort((a, b) => (b.archivedAt || '').localeCompare(a.archivedAt || ''));
+  const arch = R.showArchived;
+  const items = arch ? archived : (R.items || []).filter((i) => !archive[i.listingId] && (!i.endDate || new Date(i.endDate) >= cutoff));
+  const pending = arch ? items : items.filter((i) => !R.results[i.listingId]?.ok);
   const sel = pending.filter((i) => R.selected.has(i.listingId));
   view.innerHTML = `
     <h1>Relist</h1>
-    <p class="sub">Unsold listings that haven't been relisted yet. Trade Me keeps these for 45 days.</p>
+    <p class="sub">Unsold listings that haven't been relisted yet. Trade Me keeps these for 45 days. Archived listings are never relisted from the app.</p>
     <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
       <select id="rlAcc" style="width:auto;min-width:200px">${accs.map((a) => `<option value="${a.id}" ${a.id === R.accountId ? 'selected' : ''}>${esc(a.nickname)}</option>`).join('') || '<option>No accounts</option>'}</select>
-      <button class="btn" id="rlRefresh" ${R.loading || !R.accountId ? 'disabled' : ''}>${R.loading ? 'Loading…' : 'Refresh'}</button>
-      <span class="hint" style="margin:0">${R.items ? `${items.length} unsold · ${sel.length} selected` : ''}</span>
-      <select id="rlDays" style="width:auto;margin-left:auto" title="Trade Me only keeps unsold listings for 45 days">
+      <div class="seg" id="rlView"><button data-v="0" class="${arch ? '' : 'on'}">Unsold</button><button data-v="1" class="${arch ? 'on' : ''}">Archived (${archived.length})</button></div>
+      <button class="btn" id="rlRefresh" ${R.loading || !R.accountId || arch ? 'disabled' : ''}>${R.loading ? 'Loading…' : 'Refresh'}</button>
+      <span class="hint" style="margin:0">${arch ? `${items.length} archived · ${sel.length} selected` : R.items ? `${items.length} unsold · ${sel.length} selected` : ''}</span>
+      <select id="rlDays" style="width:auto;margin-left:auto" title="Trade Me only keeps unsold listings for 45 days" ${arch ? 'hidden' : ''}>
         ${[7, 14, 30, 60, 90].map((d) => `<option value="${d}" ${R.days === d ? 'selected' : ''}>Ended in last ${d} days</option>`).join('')}
       </select>
     </div>
     ${
-      R.error
+      R.error && !arch
         ? `<div class="empty" style="color:var(--red)">${esc(R.error)}</div>`
-        : !R.items
+        : !R.items && !arch
           ? `<div class="empty">${R.loading ? '<div class="spinner" style="margin:auto"></div>' : 'Pick an account and hit Refresh.'}</div>`
           : !items.length
-            ? '<div class="empty">Nothing to relist. Everything has sold or been relisted.</div>'
+            ? `<div class="empty">${arch ? 'Nothing archived. Archive listings you never want relisted.' : 'Nothing to relist. Everything has sold or been relisted.'}</div>`
             : `<div class="rl-table">
                 <label class="rl-row rl-head"><input type="checkbox" id="rlAll" ${pending.length && sel.length === pending.length ? 'checked' : ''}/><span></span><span>Listing</span><span>Price</span><span>Ended</span><span>Status</span></label>
                 ${items
@@ -1399,7 +1469,7 @@ function renderRelist() {
                       <span class="rl-title"><b>${esc(i.title)}</b><a href="#" data-url="${esc(i.url)}">#${i.listingId}</a></span>
                       <span class="rl-num">$${Number(i.price || 0).toFixed(2)}</span>
                       <span class="rl-muted">${i.endDate ? ago(i.endDate) : ''}</span>
-                      <span class="rl-status" id="st-${i.listingId}">${status}</span>
+                      <span class="rl-status" id="st-${i.listingId}">${arch ? `<span class="rl-muted">Archived ${ago(i.archivedAt)}</span>` : status}</span>
                     </label>`;
                   })
                   .join('')}
@@ -1407,9 +1477,36 @@ function renderRelist() {
     }
     <div class="bar">
       <div class="msg" id="rlMsg"></div>
+      ${
+        arch
+          ? `<button class="btn" id="rlUnarch" ${sel.length ? '' : 'disabled'}>Unarchive selected (${sel.length})</button>`
+          : `<button class="btn ghost" id="rlArch" ${sel.length && !R.running ? '' : 'disabled'}>Archive selected (${sel.length})</button>
       <button class="btn" id="rlSel" ${sel.length && !R.running ? '' : 'disabled'}>Relist selected (${sel.length})</button>
-      <button class="btn primary" id="rlAllBtn" ${pending.length && !R.running ? '' : 'disabled'}>Relist all (${pending.length})</button>
+      <button class="btn primary" id="rlAllBtn" ${pending.length && !R.running ? '' : 'disabled'}>Relist all (${pending.length})</button>`
+      }
     </div>`;
+
+  $$('#rlView button').forEach(
+    (b) =>
+      (b.onclick = () => {
+        R.showArchived = b.dataset.v === '1';
+        R.selected.clear();
+        renderRelist();
+        if (!R.showArchived && !R.items && !R.loading && R.accountId) loadRelist();
+      }),
+  );
+  const setArchived = async (rows, on) => {
+    try {
+      S = await api.relistArchive({ accountId: R.accountId, items: rows, archived: on });
+      rows.forEach((i) => R.selected.delete(i.listingId));
+      toast(`${rows.length} ${on ? 'archived' : 'unarchived'}`);
+    } catch (err) {
+      toast(err.message);
+    }
+    renderRelist();
+  };
+  $('#rlArch')?.addEventListener('click', () => setArchived(sel, true));
+  $('#rlUnarch')?.addEventListener('click', () => setArchived(sel, false));
 
   $('#rlAcc').onchange = (e) => {
     R.accountId = e.target.value;
@@ -1438,8 +1535,8 @@ function renderRelist() {
       }),
   );
   $$('[data-url]').forEach((a) => (a.onclick = (e) => (e.preventDefault(), e.stopPropagation(), api.openExternal(a.dataset.url))));
-  $('#rlSel').onclick = () => confirmRelist(sel);
-  $('#rlAllBtn').onclick = () => confirmRelist(pending);
+  $('#rlSel')?.addEventListener('click', () => confirmRelist(sel));
+  $('#rlAllBtn')?.addEventListener('click', () => confirmRelist(pending));
   if (!R.items && !R.loading && !R.error && R.accountId) loadRelist();
 }
 
@@ -1568,17 +1665,18 @@ function renderLive() {
         ? `<div class="empty" style="color:var(--red)">${esc(LIVE.error)}</div>`
         : !LIVE.items
           ? `<div class="empty">${accs.length ? '<div class="spinner" style="margin:auto"></div>' : 'Connect an account in Settings.'}</div>`
-          : `<div class="sold-stats">
+          : `<div class="sold-stats five">
               <div><span>Live listings</span><b>${items.length}</b></div>
               <div><span>From this app</span><b>${items.filter((i) => fromApp.has(+i.listingId)).length}</b></div>
-              <div><span>With bids</span><b>${items.filter((i) => i.bids).length}</b></div>
+              <div><span>Views</span><b>${items.reduce((s, i) => s + (i.views || 0), 0)}</b></div>
+              <div><span>Watching</span><b>${items.reduce((s, i) => s + (i.watchers || 0), 0)}</b></div>
               <div><span>Total asking</span><b>${dollars(total)}</b></div>
             </div>
             ${
               !items.length
                 ? `<div class="empty">${q ? 'Nothing matches that filter.' : 'Nothing for sale right now.'}</div>`
                 : `<div class="rl-table sold-table live-table ${showAcc ? 'with-acc' : ''}">
-                    <div class="sold-row rl-head"><input type="checkbox" id="liveAll" ${sel.length && sel.length === items.length ? 'checked' : ''} ${LIVE.running ? 'disabled' : ''}/><span></span><span>Listing</span>${showAcc ? '<span>Account</span>' : ''}<span>Source</span><span>Buy Now</span><span>Bids</span><span>Ends in</span><span></span></div>
+                    <div class="sold-row rl-head"><input type="checkbox" id="liveAll" ${sel.length && sel.length === items.length ? 'checked' : ''} ${LIVE.running ? 'disabled' : ''}/><span></span><span>Listing</span>${showAcc ? '<span>Account</span>' : ''}<span>Source</span><span>Buy Now</span><span>Bids</span><span title="Views">Views</span><span title="Watchlists (bidders + watchers)">Watching</span><span>Ends in</span><span></span></div>
                     ${items
                       .map(
                         (i) => `<div class="sold-row">
@@ -1589,6 +1687,8 @@ function renderLive() {
                           <span>${fromApp.has(+i.listingId) ? '<i class="pay-tag">App</i>' : '<i class="pay-tag" style="opacity:.6">Trade Me</i>'}</span>
                           <span class="rl-num">${i.buyNow ? dollars(i.buyNow) : '—'}</span>
                           <span class="rl-muted">${i.bids ? `${i.bids} · ${dollars(i.maxBid)}` : i.buyNow && !i.start ? '' : `from ${dollars(i.start)}`}</span>
+                          <span class="rl-num ${i.views ? '' : 'rl-muted'}">${i.views ?? 0}</span>
+                          <span class="rl-num ${i.watchers ? 'watch-num' : 'rl-muted'}">${i.watchers ?? 0}</span>
                           <span class="rl-muted">${i.endDate ? endsIn(i.endDate) : ''}</span>
                           <button class="dots-btn" data-menu="${i.listingId}" title="More">⋯</button>
                         </div>`,
@@ -1665,30 +1765,58 @@ function dropPrices(list) {
       <span class="dp-eg" id="dpEg"></span>
     </div>
     <div class="dp-list" id="dpPreview"></div>
-    <p class="hint">Listings with bids are locked by Trade Me and will show an error.</p>
+    <p class="hint">Click a new price to type your own. Listings with bids are locked by Trade Me and will show an error.</p>
     <div class="actions"><button class="btn ghost" id="cancel">Cancel</button><button class="btn primary" id="go">Update prices</button></div>`);
+  // Prices typed straight into a row win over the % (any price, up or down). Changing the % or
+  // rounding recalculates every row, typed ones included.
+  let typed = {};
   const plan = () =>
     list.map((i) => {
       const from = currentPrice(i);
-      const to = droppedPrice(from, pct, round);
-      return { i, from, to, ok: to >= 0.5 && to < from };
+      const own = typed[i.listingId];
+      const to = own != null ? Math.round(own * 100) / 100 : droppedPrice(from, pct, round);
+      return { i, from, to, own: own != null, ok: to >= 0.5 && (own != null ? to !== from : to < from) };
     });
-  const preview = () => {
+  const updateGo = () => {
     const rows = plan();
-    $('#dpPreview', card).innerHTML = rows
-      .map(
-        (r) => `<div class="dp-row ${r.ok ? '' : 'skip'}">
-          ${r.i.picture ? `<img src="${esc(r.i.picture)}" alt=""/>` : '<span class="rl-noimg"></span>'}
-          <span class="dp-title">${esc(r.i.title)}</span>
-          <span class="dp-from">${dollars(r.from)}</span>
-          <span class="dp-to">${r.ok ? dollars(r.to) : 'Skipped'}</span>
-        </div>`,
-      )
-      .join('');
-    $('#dpEg', card).textContent = { none: 'Exact, cents kept, e.g. $185.90', nearest: 'e.g. $185.90 → $186', down: 'e.g. $185 → $180', up: 'e.g. $185 → $190' }[round];
+    rows.forEach((r) => {
+      const row = $(`.dp-row[data-id="${r.i.listingId}"]`, card);
+      row?.classList.toggle('skip', !r.ok);
+      row?.classList.toggle('typed', r.own);
+      // % change from the current price: red for a drop, green for a rise.
+      const badge = $('.dp-pctchg', row);
+      if (!badge) return;
+      const chg = r.from && r.to >= 0.5 ? ((r.to - r.from) / r.from) * 100 : 0;
+      const shown = Math.abs(chg) < 0.05 ? '0%' : `${chg > 0 ? '+' : '−'}${+Math.abs(chg).toFixed(1)}%`;
+      badge.textContent = shown;
+      badge.className = 'dp-pctchg ' + (chg < -0.05 ? 'down' : chg > 0.05 ? 'up' : '');
+    });
     const n = rows.filter((r) => r.ok).length;
     $('#go', card).disabled = !n;
     $('#go', card).textContent = `Update ${n} price${n === 1 ? '' : 's'}`;
+  };
+  const preview = () => {
+    typed = {};
+    $('#dpPreview', card).innerHTML = plan()
+      .map(
+        (r) => `<div class="dp-row" data-id="${r.i.listingId}">
+          ${r.i.picture ? `<img src="${esc(r.i.picture)}" alt=""/>` : '<span class="rl-noimg"></span>'}
+          <span class="dp-title">${esc(r.i.title)}</span>
+          <span class="dp-from">${dollars(r.from)}</span>
+          <label class="dp-to"><span>$</span><input type="number" min="0.5" step="0.01" data-to="${r.i.listingId}" value="${r.to >= 0.5 ? (Number.isInteger(r.to) ? r.to : r.to.toFixed(2)) : ''}" title="Type your own price for this listing" /></label>
+          <span class="dp-pctchg"></span>
+        </div>`,
+      )
+      .join('');
+    $$('[data-to]', card).forEach(
+      (el) =>
+        (el.oninput = () => {
+          typed[+el.dataset.to] = el.value === '' ? 0 : +el.value;
+          updateGo();
+        }),
+    );
+    $('#dpEg', card).textContent = { none: 'Exact, cents kept, e.g. $185.90', nearest: 'e.g. $185.90 → $186', down: 'e.g. $185 → $180', up: 'e.g. $185 → $190' }[round];
+    updateGo();
   };
   preview();
   $('#dpPct', card).oninput = (e) => {
@@ -2575,18 +2703,33 @@ function renderSections() {
     persist(profiles);
     if (F?.accountId === defAcc && F?.profileId === p.id) F = null; // next new listing picks up the change
     secCostsSoon(p);
+    showShipRefErr();
+  };
+  // Shown on every sub-tab, since fixing it may mean editing a template or adding a shipping option.
+  const showShipRefErr = () => {
+    const el = $('#shipRefErr');
+    if (!el) return;
+    const msg = shipRefError(p);
+    el.textContent = msg;
+    el.classList.toggle('hidden', !msg);
   };
   const box = $('#sections');
   box.innerHTML = `
     <div class="card">
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:16px">
-        <div class="seg" id="secSeg">${profiles.map((x) => `<button data-s="${esc(x.id)}" class="${x.id === p.id ? 'on' : ''}">${esc(x.name)}</button>`).join('')}</div>
+        <div class="seg wrap-seg" id="secSeg">${profiles
+          .map(
+            (x) =>
+              `<button data-s="${esc(x.id)}" class="sec-chip ${x.id === p.id ? 'on' : ''}"><span class="sec-name">${esc(x.name)}</span>${profiles.length > 1 ? `<i class="sec-x" data-del="${esc(x.id)}" title="Delete this section">×</i>` : ''}</button>`,
+          )
+          .join('')}</div>
         <button class="btn small" id="addSec">＋ Add section</button>
       </div>
       <div class="tabs" id="subTabs">
         ${[['general', 'General'], ['templates', 'Templates'], ['shipping', 'Shipping'], ['payment', 'Payment']].map(([k, l]) => `<button data-t="${k}">${l}</button>`).join('')}
       </div>
       <div class="cost-strip" id="secCost"></div>
+      <div class="ship-ref-err hidden" id="shipRefErr"></div>
       <div data-panel="general">
       <div class="row">
         <label class="f">Section name <input id="secName" value="${esc(p.name)}" /></label>
@@ -2630,8 +2773,13 @@ function renderSections() {
 
       <div data-panel="templates">
         <label class="f" style="margin-bottom:12px">Title <input id="tTitle" value="${esc(p.titleTemplate)}" /></label>
-        <label class="f">Description <textarea id="tDesc" rows="8">${esc(p.descriptionTemplate)}</textarea></label>
-        <p class="hint">Placeholders: <code>{brand}</code> <code>{name}</code> <code>{sku}</code> <code>{size}</code> <code>{eu}</code> <code>{colour}</code> <code>{condition}</code> <code>{afterpay}</code> (says "AfterPay Available" only when Afterpay is on, e.g. <code>[{afterpay}]</code>)</p>
+        <label class="f" style="margin-bottom:12px">Description <textarea id="tDesc" rows="8">${esc(p.descriptionTemplate)}</textarea></label>
+        <div class="row">
+          <label class="f">Afterpay text (title) <input id="tAfterpay" value="${esc(p.afterpayText ?? 'AfterPay Available')}" placeholder="[AfterPay Available]" /></label>
+          <label class="f">Afterpay text (description) <input id="tAfterpayDesc" value="${esc(p.afterpayDescText ?? 'AfterPay Available')}" placeholder="AfterPay Available" /></label>
+        </div>
+        <p class="hint">Placeholders: <code>{brand}</code> <code>{name}</code> <code>{sku}</code> <code>{size}</code> <code>{eu}</code> <code>{colour}</code> <code>{condition}</code> <code>{afterpay}</code> (shows the matching Afterpay text above exactly as typed, only when Afterpay is on)</p>
+        <p class="hint">Shipping: <code>{shippingName1}</code> <code>{shippingValue1}</code>, <code>{shippingName2}</code> <code>{shippingValue2}</code>… numbered in the order of your options under Shipping (e.g. "Nationwide courier" and "$8").</p>
       </div>
     </div>`;
 
@@ -2642,8 +2790,23 @@ function renderSections() {
   };
   $$('#subTabs button').forEach((b) => (b.onclick = () => ((subTab = b.dataset.t), showPanel())));
   showPanel();
+  showShipRefErr();
 
   $$('#secSeg button').forEach((b) => (b.onclick = () => ((editProfileId = b.dataset.s), renderSections())));
+  // × on a section chip deletes that section (after asking).
+  $$('#secSeg [data-del]').forEach(
+    (x) =>
+      (x.onclick = (e) => {
+        e.stopPropagation();
+        const target = profiles.find((s) => s.id === x.dataset.del);
+        if (!target || !confirm(`Delete the "${target.name}" section? Its category, templates and defaults go with it.`)) return;
+        const rest = profiles.filter((s) => s.id !== target.id);
+        persist(rest);
+        if (editProfileId === target.id) editProfileId = rest[0].id;
+        if (F?.accountId === defAcc && F?.profileId === target.id) F = null;
+        renderSections();
+      }),
+  );
   $('#addSec').onclick = () => {
     const copy = { ...structuredClone(p), id: 'sec-' + Date.now(), name: 'New section', category: { number: '', path: '' } };
     profiles.push(copy);
@@ -2663,7 +2826,7 @@ function renderSections() {
 
   $('#secName').oninput = (e) => {
     p.name = e.target.value || 'Untitled';
-    $(`#secSeg [data-s="${CSS.escape(p.id)}"]`).textContent = p.name;
+    $(`#secSeg [data-s="${CSS.escape(p.id)}"] .sec-name`).textContent = p.name;
     save();
   };
   $('#listingType').value = p.listingType;
@@ -2744,6 +2907,8 @@ function renderSections() {
 
   $('#tTitle').oninput = (e) => ((p.titleTemplate = e.target.value), save());
   $('#tDesc').oninput = (e) => ((p.descriptionTemplate = e.target.value), save());
+  $('#tAfterpay').oninput = (e) => ((p.afterpayText = e.target.value), save());
+  $('#tAfterpayDesc').oninput = (e) => ((p.afterpayDescText = e.target.value), save());
 }
 
 /* ---------- boot ---------- */

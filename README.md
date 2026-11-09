@@ -24,6 +24,6 @@ npm start
 ## Release a new version
 
 1. Bump `version` in `package.json` and commit.
-2. Tag and push: `git tag v0.2.0 && git push origin main v0.2.0`.
+2. Tag and push: `git tag v1.1.0 && git push origin main v1.1.0`.
 3. GitHub Actions builds Windows + Mac and attaches them to the release. Installed apps pick it up
    from Settings → Updates.

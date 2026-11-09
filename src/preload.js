@@ -38,5 +38,6 @@ contextBridge.exposeInMainWorld('api', {
   answerQuestion: (payload) => call('questions:answer', payload),
   relistList: (accountId) => call('relist:list', accountId),
   relistRun: (payload) => call('relist:run', payload),
+  relistArchive: (payload) => call('relist:archive', payload),
   onRelistProgress: (fn) => ipcRenderer.on('relist-progress', (_e, p) => fn(p)),
 });
