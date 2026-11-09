@@ -2890,7 +2890,7 @@ function renderSections() {
           <label class="f">Afterpay text (description) <input id="tAfterpayDesc" value="${esc(p.afterpayDescText ?? 'AfterPay Available')}" placeholder="AfterPay Available" /></label>
         </div>
         <p class="hint">Placeholders: <code>{brand}</code> <code>{name}</code> <code>{sku}</code> <code>{size}</code> <code>{eu}</code> <code>{colour}</code> <code>{condition}</code> <code>{afterpay}</code> (shows the matching Afterpay text above exactly as typed, only when Afterpay is on)</p>
-        <div style="margin:14px 0 4px"><button class="btn" id="tPreview">Preview with a Panda Dunk</button></div>
+        <div style="margin:14px 0 4px"><button class="btn" id="tPreview">Preview</button></div>
         <p class="hint">Shipping: <code>{shippingName1}</code> <code>{shippingValue1}</code>, <code>{shippingName2}</code> <code>{shippingValue2}</code>… numbered in the order of your options under Shipping (e.g. "Nationwide courier" and "$8").</p>
       </div>
     </div>`;
