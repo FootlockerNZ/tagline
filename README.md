@@ -40,9 +40,8 @@ drag it into Applications to replace the old app. Your settings are kept.
 
 ## First-time setup (both platforms)
 
-1. **Trade Me API keys.** On Trade Me, go to **My Trade Me → API applications** and register an app.
-   Use the callback URL `https://localhost/trademe-callback`. Copy the consumer key and secret into
-   **Settings → Trade Me API** in Tagline. (Sandbox testing needs a separate app on tmsandbox.co.nz.)
+1. **Trade Me API keys.** Get a consumer key and secret (see [Applying for a Trade Me API key](#applying-for-a-trade-me-api-key)
+   below) and paste them into **Settings → Trade Me API** in Tagline.
 2. **Add your Trade Me account(s).** In **Settings → Accounts**, click **Log in with Trade Me**, sign in and click **Allow**.
    You can add more than one and choose a default.
 3. **Set up your sections.** Under **Defaults**, each section (Men's sneakers, Women's sneakers,
@@ -53,6 +52,40 @@ drag it into Applications to replace the old app. Your settings are kept.
    details from a SKU.
 
 That's it: enter a SKU, pick a size and price, and list.
+
+---
+
+## Applying for a Trade Me API key
+
+Tagline talks to Trade Me through your own registered API application. Each business needs its own.
+
+> **Who can apply:** since 10 April 2026 Trade Me only approves Marketplace API applications for
+> **in-trade sellers**. Make sure your Trade Me account is set up as an in-trade seller first.
+
+1. Log in to [trademe.co.nz](https://www.trademe.co.nz) with the account that should own the app.
+   Apps can't be moved to another member later, so use the business account, not a personal one.
+2. Open [Register a new application](https://www.trademe.co.nz/MyTradeMe/Api/RegisterNewApplication.aspx),
+   or go to **My Trade Me → Settings → API Applications**.
+3. Fill in the form:
+   - **Application name / description:** e.g. "Tagline – listing tool for our store". Say it's for
+     listing and managing your own stock.
+   - **Callback URL:** `https://localhost/trademe-callback`
+   - **Permissions:** Read and Write (needed to create, edit and withdraw listings).
+   - **Contact email:** a business or shared inbox. Trade Me uses it for outage and API change notices.
+4. Submit. Copy the **Consumer key** and **Consumer secret** shown and keep them somewhere safe.
+5. **Wait for approval.** Live-site apps are reviewed by Trade Me against their
+   [use cases](https://developer.trademe.co.nz/api-overview/use-cases) and
+   [terms](https://developer.trademe.co.nz/terms-and-conditions). Until it's approved, logging in from
+   Tagline won't work.
+6. Once approved, paste the key and secret into **Settings → Trade Me API** in Tagline, then log in
+   your account(s) under **Settings → Accounts**.
+
+**Testing first (optional):** the [Trade Me Sandbox](https://www.tmsandbox.co.nz) is a separate test
+site with its own membership. Sandbox apps are approved instantly:
+[register one here](https://www.tmsandbox.co.nz/MyTradeMe/Api/RegisterNewApplication.aspx) and switch
+Tagline to Sandbox in Settings. Listings there aren't real.
+
+Never share your consumer secret or commit it anywhere. Tagline stores it encrypted on your computer only.
 
 ---
 
