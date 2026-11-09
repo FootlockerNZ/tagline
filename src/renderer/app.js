@@ -31,6 +31,15 @@ const closeModal = () => {
   modalOnClose = null;
   f?.();
 };
+// Character counter: "12/80" normally; over the limit it turns into a red bubble and the field goes red. Returns true when over.
+function overCount(counter, field, n, max) {
+  if (!counter) return false;
+  const over = n > max;
+  counter.textContent = over ? `Too long: ${n}/${max}` : `${n}/${max}`;
+  counter.classList.toggle('over', over);
+  field?.classList.toggle('too-long', over);
+  return over;
+}
 // In-app replacement for confirm(): resolves true on the action button, false on Cancel, Esc or a click outside.
 function ask({ title, body = '', ok = 'OK', danger = false }) {
   return new Promise((resolve) => {
@@ -444,7 +453,7 @@ function renderNew() {
       <div class="card">
         <h2>Listing</h2>
         <label class="f" style="margin-bottom:12px">Title <span class="counter" id="titleCount"></span>
-          <input id="title" maxlength="80" value="${esc(F.title)}" />
+          <input id="title" value="${esc(F.title)}" />
         </label>
         <label class="f">Description <span class="counter" id="descCount"></span>
           <textarea id="desc" rows="8">${esc(F.desc)}</textarea>
@@ -867,7 +876,7 @@ function renderBrand() {
 }
 
 function refreshText() {
-  if (!F.titleDirty) F.title = fill(P().titleTemplate, vars()).slice(0, 80);
+  if (!F.titleDirty) F.title = fill(P().titleTemplate, vars());
   // Descriptions have their own Afterpay wording (no brackets by default).
   if (!F.descDirty)
     F.desc = fill(P().descriptionTemplate, { ...vars(), afterpay: F.payment.afterpay ? (P().afterpayDescText ?? 'AfterPay Available').trim() : '' });
@@ -888,7 +897,7 @@ const suggestSoon = debounce(() => loadSuggest(), 600);
 async function loadSuggest() {
   if (!F || current !== 'new' || !F.accountId) return;
   const skuNow = String(F.sku || '').trim().toUpperCase();
-  const key = [F.accountId, skuNow, F.name].join('|');
+  const key = [F.accountId, skuNow, F.name, F.condition].join('|');
   if (!skuNow && !F.name) return (F.suggest = null), renderSuggest();
   if (F.suggest?.key === key) return;
   F.suggest = { key, loading: true };
@@ -955,9 +964,8 @@ function renderSuggest() {
 function counts() {
   const tc = $('#titleCount');
   if (!tc) return;
-  tc.textContent = `${F.title.length}/80`;
-  $('#descCount').textContent = `${F.desc.length}/2048`;
-  $('#descCount').classList.toggle('over', F.desc.length > 2048);
+  overCount(tc, $('#title'), F.title.length, 80);
+  overCount($('#descCount'), $('#desc'), F.desc.length, 2048);
 }
 
 // A different SKU/name in the box is a different product: drop what the last one filled in
@@ -1284,6 +1292,8 @@ function buildListing() {
   if (!F.accountId) errs.push('Connect a Trade Me account in Settings.');
   if (!F.category.number) errs.push('Pick a category.');
   if (!F.title.trim()) errs.push('Add a title.');
+  if (F.title.trim().length > 80) errs.push(`Title is ${F.title.trim().length}/80 characters. Shorten it.`);
+  if (F.desc.length > 2048) errs.push(`Description is ${F.desc.length}/2048 characters. Shorten it.`);
   if (!F.desc.trim()) errs.push('Add a description.');
   const shipErr = shipRefError(P());
   if (shipErr) errs.push(shipErr + ' Fix it under Defaults → Templates or Shipping.');
@@ -1296,7 +1306,7 @@ function buildListing() {
 
   const L = {
     Category: F.category.number,
-    Title: F.title.trim().slice(0, 80),
+    Title: F.title.trim(),
     Description: [F.desc.replace(/\r?\n/g, '\r\n')],
     Duration: +F.duration,
     Pickup: +SH().pickup,
@@ -1978,7 +1988,7 @@ async function editListing(item) {
   card = modal(`
     <h3>Edit listing</h3>
     <p class="hint" style="margin-top:-6px">#${item.listingId} · ${esc(item.nickname)}</p>
-    <label class="f"><span>Title <span class="counter" id="edTitleN"></span></span><input id="edTitle" maxlength="80" value="${esc(L.Title || '')}" ${lock('Title')} /></label>
+    <label class="f"><span>Title <span class="counter" id="edTitleN"></span></span><input id="edTitle" value="${esc(L.Title || '')}" ${lock('Title')} /></label>
     <div class="row">
       ${num('BuyNowPrice', 'Buy Now ($)')}
       ${isBuyNowOnly ? '' : num('StartPrice', 'Start price ($)') + num('ReservePrice', 'Reserve ($)')}
@@ -1988,13 +1998,13 @@ async function editListing(item) {
       <label class="f">SKU<input id="edSKU" value="${esc(L.SKU || '')}" ${lock('SKU')} /></label>
       <label class="f">Offers<select id="edOffers" ${lock('IsCounterOffersAllowed')}><option value="0">No offers</option><option value="1" ${L.IsCounterOffersAllowed ? 'selected' : ''}>Allow offers</option></select></label>
     </div>
-    <label class="f"><span>Description <span class="counter" id="edDescN"></span></span><textarea id="edDesc" rows="9" maxlength="2048" ${lock('Description')}>${esc(desc)}</textarea></label>
+    <label class="f"><span>Description <span class="counter" id="edDescN"></span></span><textarea id="edDesc" rows="9" ${lock('Description')}>${esc(desc)}</textarea></label>
     ${locked.size ? `<p class="hint">Locked by Trade Me right now: ${[...(L.ImmutableFields || [])].map(esc).join(', ')}</p>` : ''}
     <p class="hint" id="edMsg" style="color:var(--red)"></p>
     <div class="actions"><button class="btn ghost" id="cancel">Cancel</button><button class="btn primary" id="go">Save changes</button></div>`);
   const counts = () => {
-    $('#edTitleN', card).textContent = `${$('#edTitle', card).value.length}/80`;
-    $('#edDescN', card).textContent = `${$('#edDesc', card).value.length}/2048`;
+    const over = overCount($('#edTitleN', card), $('#edTitle', card), $('#edTitle', card).value.trim().length, 80) | overCount($('#edDescN', card), $('#edDesc', card), $('#edDesc', card).value.length, 2048);
+    $('#go', card).disabled = !!over;
   };
   counts();
   $('#edTitle', card).oninput = $('#edDesc', card).oninput = counts;
