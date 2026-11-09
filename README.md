@@ -5,6 +5,15 @@ live listing management (edit, withdraw, bulk price drops, views and watchers), 
 
 Your Trade Me API keys, accounts and tokens are stored on your own computer only, never in this repo.
 
+## Screens
+
+| | |
+|---|---|
+| **New listing**: enter a SKU, it fills the details, price and fees.<br><img src="docs/screenshots/new.png" width="420"> | **Live**: everything for sale, with views, watchers, edits and bulk price drops.<br><img src="docs/screenshots/live.png" width="420"> |
+| **Relist**: unsold listings to relist in one go, or archive.<br><img src="docs/screenshots/relist.png" width="420"> | **Sold**: what sold, fees and your payout.<br><img src="docs/screenshots/sold.png" width="420"> |
+| **Questions**: answer buyer questions without leaving the app.<br><img src="docs/screenshots/questions.png" width="420"> | **Defaults**: per-section category, templates, shipping and payment.<br><img src="docs/screenshots/defaults.png" width="420"> |
+| **History**: every listing, price change, withdrawal, relist and more.<br><img src="docs/screenshots/history.png" width="420"> | **Settings**: accounts, API keys, product lookup and updates.<br><img src="docs/screenshots/settings.png" width="420"> |
+
 ---
 
 ## Install on Windows
