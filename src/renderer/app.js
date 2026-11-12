@@ -2735,8 +2735,7 @@ function traceLoginModal() {
   const saved = S.trace.viaLogin;
   const card = modal(`
     <h3>Log in to Trace</h3>
-    <p class="hint modal-sub">The address, email and password you use to log in to Trace. If your store has its own Trace address (e.g. consign.yourstore.com), put that in. Otherwise leave it blank.</p>
-    <label class="f">Trace website <input id="tlSite" spellcheck="false" placeholder="app.jointrace.co" value="${esc((S.trace.site || '').replace('https://', ''))}" /></label>
+    <p class="hint modal-sub">The same email and password you use to log in to Trace.</p>
     <label class="f">Email <input id="tlEmail" type="email" spellcheck="false" autocomplete="username" value="${esc(S.trace.email || '')}" /></label>
     <label class="f">Password <input id="tlPass" type="password" autocomplete="current-password" placeholder="${saved ? '•••••••• saved — leave blank to keep' : ''}" /></label>
     <p class="hint" id="tlMsg" style="color:var(--red);margin:0"></p>
@@ -2751,7 +2750,7 @@ function traceLoginModal() {
     go.textContent = 'Logging in…';
     $('#tlMsg', card).textContent = '';
     try {
-      S = await api.traceLogin({ email, password, site: $('#tlSite', card).value.trim() });
+      S = await api.traceLogin({ email, password });
       closeModal();
       toast('Logged in to Trace');
       F = null;

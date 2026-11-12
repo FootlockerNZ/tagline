@@ -114,7 +114,7 @@ function publicSettings() {
       sandbox: { key: s.consumer.sandbox.key, hasSecret: !!s.consumer.sandbox.secret },
     },
     accounts: s.accounts.map(({ token, secret, ...a }) => a),
-    trace: { hasToken: !!s.trace.token, viaLogin: !!s.trace.viaLogin, email: s.trace.viaLogin ? s.trace.email || '' : '', site: s.trace.site || '' },
+    trace: { hasToken: !!s.trace.token, viaLogin: !!s.trace.viaLogin, email: s.trace.viaLogin ? s.trace.email || '' : '' },
   };
 }
 
@@ -142,7 +142,6 @@ function updateSettings(patch) {
     token: t === undefined ? s.trace.token : t ? enc(t.replace(/^Bearer\s+/i, '').trim()) : '',
     viaLogin: t === undefined ? !!s.trace.viaLogin : !!(t && patch.trace.viaLogin),
     email: keepLogin ? (patch.trace?.email ?? s.trace.email ?? '') : '',
-    site: patch.trace?.site ?? s.trace.site ?? '', // Trace dashboard address, kept even after logging out
     password: keepLogin ? (patch.trace?.password ? enc(patch.trace.password) : s.trace.password ?? '') : '',
   };
   return save(next);
@@ -153,7 +152,7 @@ const traceToken = () => dec(load().trace.token) || '';
 const traceLogin = () => {
   const t = load().trace;
   const password = t.viaLogin && t.email ? dec(t.password) : '';
-  return password ? { email: t.email, password, site: t.site } : null;
+  return password ? { email: t.email, password } : null;
 };
 
 const consumer = (env) => {

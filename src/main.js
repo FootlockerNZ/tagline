@@ -121,17 +121,16 @@ handle('sku:lookup', (raw, brandOverride) => {
 // Trace product lookup. Results come back in Trace's order; the first is the default pick.
 // Sign in with your Trace email + password (saved encrypted on this computer) and keep the token.
 // When it expires, trace:search signs in again with the saved details. A blank password reuses the saved one.
-handle('trace:login', async ({ email, password, site } = {}) => {
+handle('trace:login', async ({ email, password } = {}) => {
   email = String(email || '').trim();
-  site = trace.siteOrigin(site);
   password = password || store.traceLogin()?.password;
   if (!email || !password) throw new Error('Enter your Trace email and password.');
-  const token = await trace.signIn(email, password, site);
+  const token = await trace.signIn(email, password);
   // Check the token actually works for lookups before saving, so problems show in the login popup.
   const check = await traceFetch('DD1391-100', token).catch(() => null);
   if (check?.status === 401 || check?.status === 403)
-    throw new Error(`Trace accepted your login but refused product lookups (${check.status}). If your store has its own Trace address, put it in Trace website.`);
-  store.updateSettings({ trace: { token, viaLogin: true, email, password, site } });
+    throw new Error(`Trace accepted your login but refused product lookups (${check.status}).`);
+  store.updateSettings({ trace: { token, viaLogin: true, email, password } });
   return store.publicSettings();
 });
 let traceRefreshing = null;
@@ -149,7 +148,7 @@ handle('trace:search', async (q) => {
   let signInError = null;
   if (res.status === 401 && creds) {
     try {
-      traceRefreshing ||= trace.signIn(creds.email, creds.password, creds.site).finally(() => (traceRefreshing = null));
+      traceRefreshing ||= trace.signIn(creds.email, creds.password).finally(() => (traceRefreshing = null));
       token = await traceRefreshing;
       store.updateSettings({ trace: { token, viaLogin: true } });
       res = await traceFetch(q, token);
@@ -160,7 +159,7 @@ handle('trace:search', async (q) => {
   const j = await res.json().catch(() => null);
   if (res.status === 401) {
     if (signInError) throw new Error(`Trace wouldn't sign you in again: ${signInError.message} Check Settings → Product lookup.`);
-    throw new Error(creds ? 'Trace signed you in but refused the product lookup (401). Try Change login and set your Trace website.' : 'Trace token expired. Log in under Settings → Product lookup.');
+    throw new Error(creds ? 'Trace signed you in but refused the product lookup (401). Try Change login.' : 'Trace token expired. Log in under Settings → Product lookup.');
   }
   if (!res.ok || !j) throw new Error(`Trace lookup failed (${res.status})`);
   // StockX thumbnails are 140×100; ask the same CDN for a large version for the listing photo.
