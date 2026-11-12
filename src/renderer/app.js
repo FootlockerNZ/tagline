@@ -2289,7 +2289,10 @@ function renderQuestions() {
   $$('[data-url]').forEach((a) => (a.onclick = (e) => (e.preventDefault(), api.openExternal(a.dataset.url))));
   $$('.q-reply textarea').forEach((t) => {
     t.oninput = () => (Q.drafts[t.dataset.q] = t.value);
-    t.onkeydown = (e) => e.key === 'Enter' && (e.ctrlKey || e.metaKey) && sendAnswer(sel, +t.dataset.q);
+    // Braces matter: an on* handler that returns false cancels the key, which would block typing.
+    t.onkeydown = (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) sendAnswer(sel, +t.dataset.q);
+    };
   });
   $$('.q-reply button').forEach((b) => (b.onclick = () => sendAnswer(sel, +b.dataset.q)));
   if (sel?.koru) wireTmView(sel);
@@ -2761,7 +2764,10 @@ function traceLoginModal() {
     }
   };
   go.onclick = submit;
-  $$('input', card).forEach((i) => (i.onkeydown = (e) => e.key === 'Enter' && submit()));
+  // Braces matter: returning false from onkeydown would cancel every key and block typing.
+  $$('input', card).forEach((i) => (i.onkeydown = (e) => {
+    if (e.key === 'Enter') submit();
+  }));
   (S.trace.email ? $('#tlPass', card) : $('#tlEmail', card)).focus();
 }
 
