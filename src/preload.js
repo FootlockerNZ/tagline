@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('api', {
   lookupSku: (sku, brand) => call('sku:lookup', sku, brand),
   fetchImage: (url) => call('image:fetch', url),
   traceSearch: (q) => call('trace:search', q),
+  traceLogin: (creds) => call('trace:login', creds),
   searchCategories: (env, q) => call('category:search', env, q),
   categoryDetails: (env, n) => call('category:details', env, n),
   validate: (payload) => call('listing:validate', payload),

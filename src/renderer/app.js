@@ -2558,15 +2558,19 @@ function renderSettings() {
 
     <div class="card">
       <h2>Product lookup (Trace)</h2>
-      <div class="row">
-        <label class="f">Auth token <input id="traceToken" type="password" spellcheck="false" placeholder="${S.trace.hasToken ? '•••••••• saved — paste to replace' : 'Paste the Bearer token'}" /></label>
-      </div>
-      <div style="display:flex;gap:8px;align-items:center">
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn ${S.trace.viaLogin ? 'small' : 'primary'}" id="traceLogin">${S.trace.viaLogin ? 'Change login' : 'Log in to Trace'}</button>
         <button class="btn small" id="traceTest" ${S.trace.hasToken ? '' : 'disabled'}>Test</button>
-        ${S.trace.hasToken ? '<button class="btn small danger" id="traceClear">Remove</button>' : ''}
-        <span class="hint" id="traceStatus" style="margin:0">${S.trace.hasToken ? 'Token saved.' : 'Without a token, add photos yourself on each listing.'}</span>
+        ${S.trace.hasToken ? `<button class="btn small danger" id="traceClear">${S.trace.viaLogin ? 'Log out' : 'Remove'}</button>` : ''}
+        <span class="hint" id="traceStatus" style="margin:0">${
+          S.trace.viaLogin ? `Logged in as ${esc(S.trace.email)}. Renews itself when it expires.` : S.trace.hasToken ? 'Pasted token saved. It stops working when it expires.' : 'Not connected. Without Trace, add photos yourself on each listing.'
+        }</span>
       </div>
-      <p class="hint">Looks up the SKU on Trace for the product name, colour and photo. "Bearer " is stripped automatically.</p>
+      <p class="hint">Looks up the SKU on Trace for the product name, colour and photo. Your Trace email and password are saved encrypted on this computer only.</p>
+      <details class="extras" style="margin-top:6px">
+        <summary>Paste a token instead</summary>
+        <label class="f" style="margin-top:10px">Bearer token <input id="traceToken" type="password" spellcheck="false" placeholder="${S.trace.hasToken && !S.trace.viaLogin ? '•••••••• saved — paste to replace' : 'Paste the Bearer token'}" /></label>
+      </details>
     </div>
 
     <div class="card">
@@ -2706,6 +2710,7 @@ function renderSettings() {
     S = await api.updateSettings({ trace: { token: '' } });
     renderSettings();
   });
+  $('#traceLogin').onclick = () => traceLoginModal();
   $('#traceTest').onclick = async () => {
     const st = $('#traceStatus');
     st.style.color = '';
@@ -2719,6 +2724,44 @@ function renderSettings() {
       st.style.color = 'var(--red)';
     }
   };
+}
+
+// Trace login popup: email and password are prefilled from the last login (the password shows as
+// "saved" and is reused if left blank). Signs in straight away; the app renews the token itself later.
+function traceLoginModal() {
+  const saved = S.trace.viaLogin;
+  const card = modal(`
+    <h3>Log in to Trace</h3>
+    <p class="hint modal-sub">The same email and password you use on Trace's website.</p>
+    <label class="f">Email <input id="tlEmail" type="email" spellcheck="false" autocomplete="username" value="${esc(S.trace.email || '')}" /></label>
+    <label class="f">Password <input id="tlPass" type="password" autocomplete="current-password" placeholder="${saved ? '•••••••• saved — leave blank to keep' : ''}" /></label>
+    <p class="hint" id="tlMsg" style="color:var(--red);margin:0"></p>
+    <div class="actions"><button class="btn ghost" id="cancel">Cancel</button><button class="btn primary" id="go">Log in</button></div>`);
+  const go = $('#go', card);
+  $('#cancel', card).onclick = closeModal;
+  const submit = async () => {
+    const email = $('#tlEmail', card).value.trim();
+    const password = $('#tlPass', card).value;
+    if (!email || (!password && !saved)) return ($('#tlMsg', card).textContent = 'Enter your email and password.');
+    go.disabled = $('#cancel', card).disabled = true;
+    go.textContent = 'Logging in…';
+    $('#tlMsg', card).textContent = '';
+    try {
+      S = await api.traceLogin({ email, password });
+      closeModal();
+      toast('Logged in to Trace');
+      F = null;
+      renderSettings();
+      $('#traceTest')?.click();
+    } catch (err) {
+      $('#tlMsg', card).textContent = err.message;
+      go.disabled = $('#cancel', card).disabled = false;
+      go.textContent = 'Log in';
+    }
+  };
+  go.onclick = submit;
+  $$('input', card).forEach((i) => (i.onkeydown = (e) => e.key === 'Enter' && submit()));
+  (S.trace.email ? $('#tlPass', card) : $('#tlEmail', card)).focus();
 }
 
 /* ---------- settings: listing sections ---------- */

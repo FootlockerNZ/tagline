@@ -61,10 +61,47 @@ drag it into Applications to replace the old app. Your settings are kept.
    category, listing type, shipping, payment and **title/description templates**. The templates start
    empty: fill them in with your own wording and placeholders like `{brand}`, `{name}`, `{condition}`,
    `{sku}` and `{size}`. Click **Preview** to see what a listing would look like.
-4. *(Optional)* **Product lookup token.** If you sell branded stock with style codes (e.g. sneakers),
-   paste a Trace bearer token under **Settings → Product lookup (Trace)** to fill product details from a SKU.
+4. *(Optional)* **Product lookup with Trace.** If you sell branded stock with style codes (e.g. sneakers),
+   connect Trace so typing a SKU fills in the product name, colour and photo. See
+   [Connecting Trace](#connecting-trace-optional) below.
 
 That's it: pick a section, fill in the item and price, and list.
+
+---
+
+## Connecting Trace (optional)
+
+[Trace](https://jointrace.co) is inventory software for sneaker stores. If you have a Trace account,
+Tagline can use it to look up products: type a SKU like `DD1391-100` and it fills in the name, colour
+and photo for you. You don't need Trace to use Tagline; without it you type those yourself.
+
+**Easiest way: log in (recommended)**
+
+1. In Tagline, go to **Settings** and scroll down to **Product lookup (Trace)**.
+2. Click **Log in to Trace**.
+3. Type the **email and password you use to log in to Trace's website**, then click **Log in**.
+4. You should see "Logged in as you@example.com". Click **Test**: it should say "Working — N results".
+
+That's it. Trace logins expire every so often; Tagline logs back in by itself with your saved details,
+so you never have to do this again. Your email and password are saved **encrypted on your computer
+only**. To change them, click **Change login** (the email is filled in for you; leave the password
+blank to keep the saved one). **Log out** removes them.
+
+**Other way: paste a token (advanced)**
+
+Only use this if logging in doesn't work for your account. A pasted token stops working when it
+expires (often within a day), and you'll need to paste a new one.
+
+1. Open your Trace dashboard in **Google Chrome** and log in.
+2. Press **F12** (Mac: **Cmd + Option + I**) to open Developer Tools, then click the **Network** tab.
+3. Refresh the page (**F5**, Mac: **Cmd + R**).
+4. In the filter box at the top of the Network tab, type `onrender`. Click any request in the list.
+5. On the right, under **Headers → Request Headers**, find **Authorization**. It looks like
+   `Bearer abc123…`. Copy everything after `Bearer `.
+6. In Tagline, open **Settings → Product lookup (Trace) → Paste a token instead**, paste it, and
+   click **Test**.
+
+Treat that token like a password: anyone who has it can use your Trace account until it expires.
 
 ---
 

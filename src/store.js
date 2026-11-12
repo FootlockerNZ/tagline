@@ -114,7 +114,7 @@ function publicSettings() {
       sandbox: { key: s.consumer.sandbox.key, hasSecret: !!s.consumer.sandbox.secret },
     },
     accounts: s.accounts.map(({ token, secret, ...a }) => a),
-    trace: { hasToken: !!s.trace.token },
+    trace: { hasToken: !!s.trace.token, viaLogin: !!s.trace.viaLogin, email: s.trace.viaLogin ? s.trace.email || '' : '' },
   };
 }
 
@@ -135,11 +135,25 @@ function updateSettings(patch) {
   }
   // Trace token: '' clears it, undefined leaves it alone.
   const t = patch.trace?.token;
-  next.trace = { token: t === undefined ? s.trace.token : t ? enc(t.replace(/^Bearer\s+/i, '').trim()) : '' };
+  // Signing in saves email + password (encrypted) so an expired token can be renewed; clearing or
+  // pasting a token by hand forgets them.
+  const keepLogin = t === undefined || !!(t && patch.trace.viaLogin);
+  next.trace = {
+    token: t === undefined ? s.trace.token : t ? enc(t.replace(/^Bearer\s+/i, '').trim()) : '',
+    viaLogin: t === undefined ? !!s.trace.viaLogin : !!(t && patch.trace.viaLogin),
+    email: keepLogin ? (patch.trace?.email ?? s.trace.email ?? '') : '',
+    password: keepLogin ? (patch.trace?.password ? enc(patch.trace.password) : s.trace.password ?? '') : '',
+  };
   return save(next);
 }
 
 const traceToken = () => dec(load().trace.token) || '';
+// Saved Trace email + password, or null when the token was pasted by hand.
+const traceLogin = () => {
+  const t = load().trace;
+  const password = t.viaLogin && t.email ? dec(t.password) : '';
+  return password ? { email: t.email, password } : null;
+};
 
 const consumer = (env) => {
   const c = load().consumer[env];
@@ -183,4 +197,4 @@ function setArchived(entries, archived) {
 }
 const isArchived = (listingId) => !!load().relistArchive[listingId];
 
-module.exports = { load, publicSettings, updateSettings, consumer, traceToken, addAccount, removeAccount, getAccount, addHistory, setArchived, isArchived };
+module.exports = { load, publicSettings, updateSettings, consumer, traceToken, traceLogin, addAccount, removeAccount, getAccount, addHistory, setArchived, isArchived };

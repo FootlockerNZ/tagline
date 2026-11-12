@@ -6,6 +6,7 @@ app.setPath('userData', path.join(app.getPath('appData'), 'trademe-lister'));
 const store = require('./store');
 const tm = require('./trademe');
 const sku = require('./sku');
+const trace = require('./trace');
 
 let win;
 
@@ -118,15 +119,38 @@ handle('sku:lookup', (raw, brandOverride) => {
 });
 
 // Trace product lookup. Results come back in Trace's order; the first is the default pick.
-handle('trace:search', async (q) => {
-  const token = store.traceToken();
-  if (!token) return null; // not configured → caller falls back to image templates
+// Sign in with your Trace email + password (saved encrypted on this computer) and keep the token.
+// When it expires, trace:search signs in again with the saved details. A blank password reuses the saved one.
+handle('trace:login', async ({ email, password } = {}) => {
+  email = String(email || '').trim();
+  password = password || store.traceLogin()?.password;
+  if (!email || !password) throw new Error('Enter your Trace email and password.');
+  const token = await trace.signIn(email, password);
+  store.updateSettings({ trace: { token, viaLogin: true, email, password } });
+  return store.publicSettings();
+});
+let traceRefreshing = null;
+const traceFetch = (q, token) =>
   // Works for SKUs and product names alike; Trace expects spaces as "+".
-  const res = await fetch(`https://fulltrace-server.onrender.com/api/products?search=${encodeURIComponent(String(q).trim()).replace(/%20/g, '+')}`, {
+  fetch(`https://fulltrace-server.onrender.com/api/products?search=${encodeURIComponent(String(q).trim()).replace(/%20/g, '+')}`, {
     headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
   });
+handle('trace:search', async (q) => {
+  let token = store.traceToken();
+  if (!token) return null; // not configured → caller falls back to image templates
+  let res = await traceFetch(q, token);
+  // Expired: if your Trace email and password are saved, sign in again quietly and try once more.
+  const creds = store.traceLogin();
+  if (res.status === 401 && creds) {
+    try {
+      traceRefreshing ||= trace.signIn(creds.email, creds.password).finally(() => (traceRefreshing = null));
+      token = await traceRefreshing;
+      store.updateSettings({ trace: { token, viaLogin: true } });
+      res = await traceFetch(q, token);
+    } catch {}
+  }
   const j = await res.json().catch(() => null);
-  if (res.status === 401) throw new Error('Trace token expired or invalid. Paste a new one in Settings → Product lookup.');
+  if (res.status === 401) throw new Error(creds ? "Trace wouldn't sign you in again. Check your email and password in Settings → Product lookup." : 'Trace token expired. Sign in under Settings → Product lookup.');
   if (!res.ok || !j) throw new Error(`Trace lookup failed (${res.status})`);
   // StockX thumbnails are 140×100; ask the same CDN for a large version for the listing photo.
   const big = (u) => (/images\.stockx\.com/.test(u) ? u.replace(/([?&])w=\d+/, '$1w=1200').replace(/([?&])h=\d+/, '$1h=1200') : u);
