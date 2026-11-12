@@ -127,6 +127,10 @@ handle('trace:login', async ({ email, password, site } = {}) => {
   password = password || store.traceLogin()?.password;
   if (!email || !password) throw new Error('Enter your Trace email and password.');
   const token = await trace.signIn(email, password, site);
+  // Check the token actually works for lookups before saving, so problems show in the login popup.
+  const check = await traceFetch('DD1391-100', token).catch(() => null);
+  if (check?.status === 401 || check?.status === 403)
+    throw new Error(`Trace accepted your login but refused product lookups (${check.status}). If your store has its own Trace address, put it in Trace website.`);
   store.updateSettings({ trace: { token, viaLogin: true, email, password, site } });
   return store.publicSettings();
 });
@@ -142,16 +146,22 @@ handle('trace:search', async (q) => {
   let res = await traceFetch(q, token);
   // Expired: if your Trace email and password are saved, sign in again quietly and try once more.
   const creds = store.traceLogin();
+  let signInError = null;
   if (res.status === 401 && creds) {
     try {
       traceRefreshing ||= trace.signIn(creds.email, creds.password, creds.site).finally(() => (traceRefreshing = null));
       token = await traceRefreshing;
       store.updateSettings({ trace: { token, viaLogin: true } });
       res = await traceFetch(q, token);
-    } catch {}
+    } catch (err) {
+      signInError = err;
+    }
   }
   const j = await res.json().catch(() => null);
-  if (res.status === 401) throw new Error(creds ? "Trace wouldn't sign you in again. Check your email and password in Settings → Product lookup." : 'Trace token expired. Sign in under Settings → Product lookup.');
+  if (res.status === 401) {
+    if (signInError) throw new Error(`Trace wouldn't sign you in again: ${signInError.message} Check Settings → Product lookup.`);
+    throw new Error(creds ? 'Trace signed you in but refused the product lookup (401). Try Change login and set your Trace website.' : 'Trace token expired. Log in under Settings → Product lookup.');
+  }
   if (!res.ok || !j) throw new Error(`Trace lookup failed (${res.status})`);
   // StockX thumbnails are 140×100; ask the same CDN for a large version for the listing photo.
   const big = (u) => (/images\.stockx\.com/.test(u) ? u.replace(/([?&])w=\d+/, '$1w=1200').replace(/([?&])h=\d+/, '$1h=1200') : u);
