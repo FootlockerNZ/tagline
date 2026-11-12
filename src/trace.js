@@ -4,12 +4,25 @@
 // so you never log in by hand after the first time.
 const API = 'https://fulltrace-server.onrender.com';
 
-async function signIn(email, password) {
+const DEFAULT_SITE = 'https://app.jointrace.co';
+// "consign.mystore.com/login" → "https://consign.mystore.com". Stores on Trace have their own
+// dashboard address, and Trace only accepts sign-ins that come from it.
+const siteOrigin = (site) => {
+  try {
+    const s = String(site || '').trim();
+    return s ? new URL(/^https?:\/\//i.test(s) ? s : 'https://' + s).origin : DEFAULT_SITE;
+  } catch {
+    throw new Error("That Trace website address doesn't look right. Use the address you log in at, e.g. app.jointrace.co.");
+  }
+};
+
+async function signIn(email, password, site) {
+  const origin = siteOrigin(site);
   let res;
   try {
     res = await fetch(`${API}/api/auth/sign-in/email`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: '*/*', Origin: 'https://app.jointrace.co', Referer: 'https://app.jointrace.co/' },
+      headers: { 'Content-Type': 'application/json', Accept: '*/*', Origin: origin, Referer: origin + '/' },
       body: JSON.stringify({ email, password }),
     });
   } catch {
@@ -24,4 +37,4 @@ async function signIn(email, password) {
   return token;
 }
 
-module.exports = { signIn };
+module.exports = { signIn, siteOrigin, DEFAULT_SITE };

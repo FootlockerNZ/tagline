@@ -121,12 +121,13 @@ handle('sku:lookup', (raw, brandOverride) => {
 // Trace product lookup. Results come back in Trace's order; the first is the default pick.
 // Sign in with your Trace email + password (saved encrypted on this computer) and keep the token.
 // When it expires, trace:search signs in again with the saved details. A blank password reuses the saved one.
-handle('trace:login', async ({ email, password } = {}) => {
+handle('trace:login', async ({ email, password, site } = {}) => {
   email = String(email || '').trim();
+  site = trace.siteOrigin(site);
   password = password || store.traceLogin()?.password;
   if (!email || !password) throw new Error('Enter your Trace email and password.');
-  const token = await trace.signIn(email, password);
-  store.updateSettings({ trace: { token, viaLogin: true, email, password } });
+  const token = await trace.signIn(email, password, site);
+  store.updateSettings({ trace: { token, viaLogin: true, email, password, site } });
   return store.publicSettings();
 });
 let traceRefreshing = null;
@@ -143,7 +144,7 @@ handle('trace:search', async (q) => {
   const creds = store.traceLogin();
   if (res.status === 401 && creds) {
     try {
-      traceRefreshing ||= trace.signIn(creds.email, creds.password).finally(() => (traceRefreshing = null));
+      traceRefreshing ||= trace.signIn(creds.email, creds.password, creds.site).finally(() => (traceRefreshing = null));
       token = await traceRefreshing;
       store.updateSettings({ trace: { token, viaLogin: true } });
       res = await traceFetch(q, token);

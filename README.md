@@ -79,7 +79,7 @@ and photo for you. You don't need Trace to use Tagline; without it you type thos
 
 1. In Tagline, go to **Settings** and scroll down to **Product lookup (Trace)**.
 2. Click **Log in to Trace**.
-3. Type the **email and password you use to log in to Trace's website**, then click **Log in**.
+3. If your store logs in to Trace at its own address (e.g. `consign.yourstore.com`), put that in **Trace website**; otherwise leave it blank. Then type the **email and password you use to log in to Trace**, and click **Log in**.
 4. You should see "Logged in as you@example.com". Click **Test**: it should say "Working — N results".
 
 That's it. Trace logins expire every so often; Tagline logs back in by itself with your saved details,
