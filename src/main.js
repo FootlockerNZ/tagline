@@ -7,6 +7,15 @@ const store = require('./store');
 const tm = require('./trademe');
 const sku = require('./sku');
 const trace = require('./trace');
+const discord = require('./discord');
+const aiphoto = require('./aiphoto');
+
+// Everything logged to History also goes to Discord (when a webhook is set and Activity is on).
+const addHistoryOnly = store.addHistory;
+store.addHistory = (entry) => {
+  addHistoryOnly(entry);
+  discord.history(entry);
+};
 
 let win;
 
@@ -441,6 +450,33 @@ handle('live:list', async (accountIds) => {
 handle('listing:get', async ({ accountId, listingId }) => tm.api(account(accountId), 'GET', `/v1/Selling/Listings/${listingId}.json`));
 
 // Edit sends the whole form back: anything left out is reset, so `listing` is the fetched form with changes applied.
+// Photos on a live listing. photos: in order, each { id } (an existing Trade Me photo) or
+// { base64 } (a new JPEG to upload). Re-reads the live form so nothing else changes.
+handle('listing:photos', async ({ accountId, listingId, photos }) => {
+  const acc = account(accountId);
+  if (!photos?.length) throw new Error('A listing needs at least one photo.');
+  if (photos.length > 20) throw new Error('Trade Me allows up to 20 photos.');
+  const L = await tm.api(acc, 'GET', `/v1/Selling/Listings/${listingId}.json`);
+  const before = (L.PhotoIds || []).join(',');
+  const ids = [];
+  let n = 0;
+  const adding = photos.filter((p) => !p.id).length;
+  for (const p of photos) {
+    if (p.id) ids.push(+p.id);
+    else {
+      win?.webContents.send('progress', `Uploading photo ${++n} of ${adding}…`);
+      ids.push(await tm.uploadPhoto(acc, { buffer: Buffer.from(p.base64, 'base64'), fileType: 'JPG', fileName: `${listingId}-${ids.length + 1}.jpg` }));
+    }
+  }
+  if (ids.join(',') === before) return true;
+  const { ImmutableFields, AvailablePromotions, AvailablePaymentMethodsForEdit, Photos, StartDate, IsSafePaymentsCompliant, ...body } = L;
+  body.PhotoIds = ids;
+  const r = await tm.api(acc, 'POST', '/v1/Selling/Edit.json', body);
+  if (!r.Success) throw new Error(validationMessage(r));
+  logAction(acc, 'edited', { listingId, title: L.Title, price: priceOf(L), thumb: `https://trademe.tmcdn.co.nz/photoserver/thumb/${ids[0]}.jpg`, detail: `Changed photos (${ids.length})` });
+  return true;
+});
+
 handle('listing:edit', async ({ accountId, listing, before, thumb }) => {
   // Drop the read-only extras the retrieve call adds; everything else goes back as it was.
   const { ImmutableFields, AvailablePromotions, AvailablePaymentMethodsForEdit, Photos, StartDate, IsSafePaymentsCompliant, ...body } = listing;
@@ -510,6 +546,10 @@ handle('sold:list', async (accountIds) => {
           payout: Math.round((subtotal + shipping - processing - success) * 100) / 100,
           pending: !!(i.IsPaymentPending || i.PaymentDetails?.IsPaymentPending),
           status: SOLD_STATUS[i.Status] || '',
+          // Courier booked through Trade Me: its tracking numbers come back here.
+          pickup: i.ShippingType === 2,
+          booked: !!i.TradeMeShippingBookingId,
+          parcels: (i.TrackedParcels || []).map((p) => ({ ref: p.TrackingReference, courier: p.CourierCompanyName || '', url: p.TrackingUrl || '' })).filter((p) => p.ref),
         });
       }
       if (!r.List?.length || page * (r.PageSize || 200) >= r.TotalCount) break;
@@ -598,5 +638,114 @@ app.on('web-contents-created', (_e, wc) => {
 
 // Own taskbar identity on Windows so the taskbar shows our icon, not Electron's.
 if (process.platform === 'win32') app.setAppUserModelId('nz.lister.trademe');
-app.whenReady().then(createWindow);
+handle('discord:test', (url) => discord.test(url));
+
+// AI hero photos.
+handle('ai:defaults', () => ({ prompt: aiphoto.DEFAULT_PROMPT, models: aiphoto.MODELS, qualities: aiphoto.QUALITIES }));
+handle('ai:saveRef', ({ key, dataUrl }) => aiphoto.saveRef(key, dataUrl));
+handle('ai:ref', (file) => aiphoto.refDataUrl(file));
+handle('ai:generate', (payload) => aiphoto.generate(payload));
+
+// Checks the saved OpenAI key works and can see the image model.
+const IMAGE_MODEL = 'gpt-image-2.6-sunburst';
+handle('openai:test', async () => {
+  const key = store.openaiKey();
+  if (!key) throw new Error('No OpenAI key saved.');
+  const res = await fetch(`https://api.openai.com/v1/models/${IMAGE_MODEL}`, { headers: { Authorization: `Bearer ${key}` } });
+  if (res.status === 401) throw new Error('OpenAI rejected the key (401). Check it or make a new one.');
+  if (res.status === 404) return `Key works, but this account can't see ${IMAGE_MODEL} yet (it may need organisation verification).`;
+  if (!res.ok) throw new Error(`OpenAI ${res.status}: ${(await res.text()).slice(0, 160)}`);
+  return `Working — ${IMAGE_MODEL} is available.`;
+});
+
+// Trade Me's Book a courier wizard for one sale, in its own window, logged in as the selling account
+// (same saved login as the embedded Trade Me pages). You choose and confirm the booking there.
+const courierWins = new Map();
+handle('courier:open', ({ accountId, purchaseId, listingId, title }) => {
+  if (!/^\d+$/.test(String(purchaseId))) throw new Error('This sale has no purchase id.');
+  const open = courierWins.get(purchaseId);
+  if (open && !open.isDestroyed()) return open.focus(), true;
+  const a = store.load().accounts.find((x) => x.id === accountId);
+  const partition = a?.webPartition || `persist:tm-${accountId}`;
+  const w = new BrowserWindow({
+    width: 1100,
+    height: 880,
+    parent: win,
+    title: `Book a courier · ${title || '#' + listingId}`,
+    autoHideMenuBar: true,
+    webPreferences: { partition, contextIsolation: true, sandbox: true },
+  });
+  courierWins.set(purchaseId, w);
+  // Stay on Trade Me; anything else opens in your normal browser.
+  w.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https:\/\//.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  w.webContents.on('will-navigate', (e, url) => {
+    if (!/^https:\/\/([a-z0-9-]+\.)*trademe\.co\.nz\//i.test(url)) (e.preventDefault(), shell.openExternal(url));
+  });
+  w.on('closed', () => {
+    courierWins.delete(purchaseId);
+    win?.webContents.send('courier-closed', { purchaseId });
+  });
+  w.loadURL(`https://www.trademe.co.nz/a/marketplace/purchase/${purchaseId}/book-courier/wizard/start?isRebooking=false`);
+  return true;
+});
+
+// NZ Post / CourierPost delivery status for tracking numbers (the public tracking page's own API).
+// Cached for 10 minutes per number.
+const trackCache = new Map();
+async function nzpostTrack(ref) {
+  const hit = trackCache.get(ref);
+  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.data;
+  const res = await fetch(`https://tools.nzpost.co.nz/tracking/api/parceltrack/parcels?tracking_reference=${encodeURIComponent(ref)}`, {
+    headers: { Accept: 'application/json', Origin: 'https://www.nzpost.co.nz', Referer: 'https://www.nzpost.co.nz/tools/tracking' },
+  });
+  if (!res.ok) throw new Error(`NZ Post ${res.status}`);
+  const j = await res.json();
+  const seen = new Set();
+  const events = (j.results?.[0]?.tracking_events || [])
+    .filter((e) => !seen.has(e.seqref + e.status) && seen.add(e.seqref + e.status))
+    .map((e) => ({ at: e.date_time, status: String(e.status || '').trim(), description: e.description || '' }))
+    .sort((a, b) => b.at.localeCompare(a.at));
+  const latest = events[0] || null;
+  const data = {
+    ref,
+    status: latest?.status || 'No tracking events yet',
+    at: latest?.at || null,
+    delivered: events.some((e) => /deliver(ed)?\b/i.test(e.status) && !/attempt|out for/i.test(e.status)),
+    events,
+    url: `https://www.nzpost.co.nz/tools/tracking/item/${ref}`,
+  };
+  trackCache.set(ref, { at: Date.now(), data });
+  return data;
+}
+handle('track:status', async (refs) => {
+  const out = {};
+  for (const ref of [...new Set(refs || [])].filter((r) => /^[A-Za-z0-9]{8,40}$/.test(r))) {
+    out[ref] = await nzpostTrack(ref).catch((e) => ({ ref, error: e.message, url: `https://www.nzpost.co.nz/tools/tracking/item/${ref}` }));
+  }
+  return out;
+});
+
+// New sales and questions → Discord, checked in the background every 3 minutes.
+let polling = false;
+const pollDiscord = async () => {
+  if (polling) return;
+  polling = true;
+  try {
+    const accounts = store.load().accounts.map((a) => store.getAccount(a.id)).filter(Boolean);
+    await discord.poll({ tm, accounts });
+  } catch (e) {
+    console.warn('[discord poll]', e.message);
+  }
+  polling = false;
+};
+handle('discord:poll', () => pollDiscord());
+
+app.whenReady().then(() => {
+  createWindow();
+  setTimeout(pollDiscord, 15000);
+  setInterval(pollDiscord, 3 * 60 * 1000);
+});
 app.on('window-all-closed', () => app.quit());

@@ -37,6 +37,11 @@ const DEFAULTS = {
   // listingId → { env, memberId, title, price, picture, endDate, archivedAt }
   relistArchive: {},
   trace: { token: '' }, // Trace (jointrace.co) bearer token for product lookup, encrypted
+  openai: { key: '' }, // OpenAI API key for AI photos, encrypted
+  ai: { model: 'gpt-image-2.6-sunburst', quality: 'high', prompt: '' }, // AI photo settings; '' prompt = built-in default
+  // Discord webhook (URL encrypted). events: which kinds of message to send.
+  // seen: sale/question ids already announced, so each is only posted once.
+  discord: { url: '', events: { activity: true, sales: true, questions: true }, seen: { sales: [], questions: [] }, primed: false },
 };
 
 const PROFILE_KEYS = ['category', 'listingType', 'duration', 'isBrandNew', 'allowOffers', 'pickup', 'payment', 'shipping', 'titleTemplate', 'descriptionTemplate'];
@@ -115,6 +120,8 @@ function publicSettings() {
     },
     accounts: s.accounts.map(({ token, secret, ...a }) => a),
     trace: { hasToken: !!s.trace.token, viaLogin: !!s.trace.viaLogin, email: s.trace.viaLogin ? s.trace.email || '' : '' },
+    discord: { hasUrl: !!s.discord.url, events: s.discord.events },
+    openai: { hasKey: !!s.openai?.key },
   };
 }
 
@@ -144,7 +151,31 @@ function updateSettings(patch) {
     email: keepLogin ? (patch.trace?.email ?? s.trace.email ?? '') : '',
     password: keepLogin ? (patch.trace?.password ? enc(patch.trace.password) : s.trace.password ?? '') : '',
   };
+  // OpenAI key: '' clears it, undefined leaves it alone.
+  const ok = patch.openai?.key;
+  next.openai = { key: ok === undefined ? s.openai?.key || '' : ok ? enc(ok.trim()) : '' };
+  // Discord webhook URL: '' clears it, undefined leaves it alone. A new URL starts fresh, so old
+  // sales/questions aren't all announced to it at once.
+  const u = patch.discord?.url;
+  next.discord = {
+    url: u === undefined ? s.discord.url : u ? enc(u.trim()) : '',
+    events: { ...s.discord.events, ...(patch.discord?.events || {}) },
+    seen: u === undefined ? s.discord.seen : { sales: [], questions: [] },
+    primed: u === undefined ? s.discord.primed : false,
+  };
   return save(next);
+}
+
+const openaiKey = () => dec(load().openai?.key) || '';
+const discordConfig = () => {
+  const d = load().discord;
+  return { url: dec(d.url) || '', events: d.events, seen: d.seen, primed: d.primed };
+};
+// Remember sale/question ids already posted (capped so the file doesn't grow forever).
+function discordSeen(seen, primed = true) {
+  const s = load();
+  const cap = (a) => [...new Set(a)].slice(-2000);
+  save({ ...s, discord: { ...s.discord, seen: { sales: cap(seen.sales), questions: cap(seen.questions) }, primed } });
 }
 
 const traceToken = () => dec(load().trace.token) || '';
@@ -197,4 +228,4 @@ function setArchived(entries, archived) {
 }
 const isArchived = (listingId) => !!load().relistArchive[listingId];
 
-module.exports = { load, publicSettings, updateSettings, consumer, traceToken, traceLogin, addAccount, removeAccount, getAccount, addHistory, setArchived, isArchived };
+module.exports = { load, publicSettings, updateSettings, consumer, traceToken, traceLogin, addAccount, removeAccount, getAccount, addHistory, setArchived, isArchived, discordConfig, discordSeen, openaiKey };

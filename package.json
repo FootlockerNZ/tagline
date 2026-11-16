@@ -1,6 +1,6 @@
 {
   "name": "trademe-lister",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Fast listing tool for Trade Me",
   "main": "src/main.js",
   "private": true,

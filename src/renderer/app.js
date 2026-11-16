@@ -21,6 +21,8 @@ function toast(msg) {
 let modalOnClose = null;
 function modal(html) {
   modalOnClose = null;
+  $('#modalCard').classList.remove('ai-wide');
+  delete $('#modalCard').dataset.job;
   $('#modalCard').innerHTML = html;
   $('#modal').classList.remove('hidden');
   return $('#modalCard');
@@ -492,7 +494,10 @@ function renderNew() {
           <input id="imgUrl" placeholder="Paste an image URL and press Enter" />
         </div>
         <input type="file" id="file" accept="image/*" multiple hidden />
-        <p class="hint">First photo is the main one. Drag in your own photos too.</p>
+        <div style="display:flex;gap:10px;align-items:center;margin-top:10px">
+          <button class="btn small" id="aiPhotoBtn" title="Put the product into this section's reference photo with AI">✨ Make AI photo</button>
+          <p class="hint" style="margin:0;flex:1">First photo is the main one. Drag in your own photos too.</p>
+        </div>
       </div>
       <div class="card">
         <h2>Payment</h2>
@@ -602,6 +607,7 @@ function renderNew() {
     refreshText(); // {afterpay} follows the Afterpay chip
   });
 
+  $('#aiPhotoBtn').onclick = () => makeAiPhoto();
   $('#imgUrl').addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' || !e.target.value.trim()) return;
     addRemoteImage(e.target.value.trim(), false);
@@ -1216,6 +1222,271 @@ function renderImages() {
   $$('[data-id]', box).forEach((t) => t.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/plain', t.dataset.id)));
 }
 
+/* Photo viewer */
+// Click a photo (AI review, Edit photos, New listing photos) to see it full screen. Click the photo to
+// zoom to full size and drag/scroll around; ← → step through the set; Esc or the background closes.
+function openViewer(srcs, start = 0) {
+  let i = start;
+  let zoom = false;
+  const v = document.createElement('div');
+  v.className = 'viewer';
+  document.body.append(v);
+  const draw = () => {
+    v.classList.toggle('zoomed', zoom);
+    v.innerHTML = `
+      <div class="viewer-stage"><img src="${esc(srcs[i])}" alt="" draggable="false" /></div>
+      <div class="viewer-bar">
+        ${srcs.length > 1 ? `<button data-v="prev">‹</button><span>${i + 1} / ${srcs.length}</span><button data-v="next">›</button>` : ''}
+        <span class="viewer-hint">${zoom ? 'Drag or scroll to look around · click to fit' : 'Click the photo to zoom'}</span>
+        <button data-v="close">✕</button>
+      </div>`;
+    const stage = $('.viewer-stage', v);
+    const img = $('img', v);
+    img.onclick = (e) => {
+      e.stopPropagation();
+      if (dragged) return;
+      // Zoom in around the clicked point.
+      const r = img.getBoundingClientRect();
+      const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+      zoom = !zoom;
+      draw();
+      if (zoom) {
+        const s = $('.viewer-stage', v), im = $('img', v);
+        const go = () => {
+          // At least 2.5× the fitted size, or the photo's real size if that's bigger (small photos still zoom).
+          const w = Math.max(im.naturalWidth, r.width * 2.5);
+          im.style.width = `${Math.round(w)}px`;
+          s.scrollLeft = fx * im.offsetWidth - s.clientWidth / 2;
+          s.scrollTop = fy * im.offsetHeight - s.clientHeight / 2;
+        };
+        im.complete ? go() : (im.onload = go);
+      }
+    };
+    stage.onclick = (e) => e.target === stage && close();
+    // Drag to pan when zoomed.
+    let dragged = false;
+    stage.onmousedown = (e) => {
+      if (!zoom) return;
+      dragged = false;
+      const sx = e.clientX, sy = e.clientY, sl = stage.scrollLeft, stp = stage.scrollTop;
+      const move = (m) => {
+        if (Math.abs(m.clientX - sx) + Math.abs(m.clientY - sy) > 4) dragged = true;
+        stage.scrollLeft = sl - (m.clientX - sx);
+        stage.scrollTop = stp - (m.clientY - sy);
+      };
+      const up = () => (removeEventListener('mousemove', move), removeEventListener('mouseup', up), setTimeout(() => (dragged = false)));
+      addEventListener('mousemove', move);
+      addEventListener('mouseup', up);
+    };
+    $$('[data-v]', v).forEach((b) => (b.onclick = (e) => (e.stopPropagation(), act(b.dataset.v))));
+  };
+  const act = (a) => {
+    if (a === 'close') return close();
+    i = (i + (a === 'next' ? 1 : -1) + srcs.length) % srcs.length;
+    zoom = false;
+    draw();
+  };
+  const key = (e) => {
+    if (e.key === 'Escape') (e.stopPropagation(), close());
+    else if (e.key === 'ArrowRight' && srcs.length > 1) act('next');
+    else if (e.key === 'ArrowLeft' && srcs.length > 1) act('prev');
+  };
+  const close = () => (v.remove(), removeEventListener('keydown', key, true));
+  addEventListener('keydown', key, true);
+  draw();
+}
+// Any photo inside these areas opens the viewer with its siblings (uses data-full when there's a bigger version).
+document.addEventListener('click', (e) => {
+  const img = e.target.closest('.ai-compare img, #lpImgs .img img, #images .img img, .ai-ref-img img');
+  if (!img || e.target.closest('button')) return;
+  const group = [...img.closest('.ai-compare, #lpImgs, #images, .ai-ref-img').querySelectorAll('.ai-compare img, .img img, .ai-ref-img img')].filter((x) => x.closest('.ai-compare, #lpImgs, #images, .ai-ref-img') === img.closest('.ai-compare, #lpImgs, #images, .ai-ref-img'));
+  openViewer(group.map((x) => x.dataset.full || x.src), Math.max(0, group.indexOf(img)));
+});
+
+/* AI hero photo */
+// Puts the listing's product photo (the first non-AI photo) into the section's reference scene,
+// then shows it next to the original to approve before it becomes the main photo.
+async function makeAiPhoto() {
+  const sec = P();
+  const product = F.images.find((i) => i.status === 'ok' && !i.ai);
+  const problem = !S.openai?.hasKey
+    ? 'Add your OpenAI API key in Settings → AI photos first.'
+    : !sec.aiRef
+      ? `The "${sec.name}" section has no reference photo yet. Add one under Defaults → ${sec.name} → AI photo.`
+      : !product
+        ? 'Add a product photo first (look up a SKU or drop one in). The AI photo is made from it.'
+        : '';
+  if (problem) return toast(problem);
+  const form = F;
+  const vars = aiVars(sec, { brand: brandName(), name: F.name, colour: F.colour, sku: F.sku });
+  runAiPhoto(sec, product.src, vars, {
+    label: [brandName(), F.name].filter(Boolean).join(' ') || 'New listing',
+    stale: () => F !== form, // you moved on to another listing meanwhile
+    staleMsg: "You've started a different listing since, so it can't be added to this one.",
+    onUse: (dataUrl) => {
+      closeModal();
+      addAiImage(dataUrl);
+      if (current !== 'new') toast('AI photo added to your new listing');
+    },
+    autoUse: (dataUrl) => addAiImage(dataUrl),
+  });
+}
+// Placeholder values for the AI prompt.
+const aiVars = (sec, { brand = '', name = '', colour = '', sku = '' } = {}) => ({
+  product: [brand, name].filter(Boolean).join(' ') || 'the product',
+  brand: brand || '',
+  name: name || '',
+  colour: colour || '',
+  sku: sku || '',
+  category: sec.aiCategory?.trim() || String(sec.category?.path || '').split('›').pop().trim().toLowerCase() || 'item',
+  section: sec.name || '',
+});
+// Generate → side-by-side review → onUse(dataUrl) / onBack(). Shared by New listing and Live.
+// Each AI photo is a job. You can watch it, or send it to the background (the tray in the corner)
+// and review it when it's ready. Several can run at once.
+const AI_JOBS = [];
+let aiJobSeq = 0;
+function runAiPhoto(sec, productSrc, vars, opts) {
+  const job = { id: ++aiJobSeq, sec, productSrc, vars, opts, label: opts.label || vars.name || vars.product, status: 'running', started: Date.now(), bg: !!opts.background };
+  AI_JOBS.push(job);
+  if (!opts.background) watchAiJob(job);
+  renderAiTray();
+  // Resolves when the job has finished (made, failed, or auto-applied); used to pace bulk runs.
+  return api
+    .aiGenerate({ refFile: sec.aiRef, productDataUrl: productSrc, vars })
+    .then((res) => {
+      job.status = 'done';
+      job.res = res;
+      api.getSettings().then((s) => (S = s)).catch(() => {}); // picks up the updated cost averages
+    })
+    .catch((err) => {
+      job.status = 'error';
+      job.error = err.message;
+    })
+    .finally(async () => {
+      // Auto-approve (Settings → AI photos): apply straight away, no review.
+      if (job.status === 'done' && S.ai?.autoApprove && opts.autoUse && !opts.stale?.()) {
+        if (isWatching(job)) closeModal();
+        dropAiJob(job);
+        try {
+          await opts.autoUse(job.res.dataUrl);
+          toast(`AI photo added: ${job.label}`);
+        } catch (err) {
+          job.status = 'error';
+          job.error = `Made the photo but couldn't add it: ${err.message}`;
+          AI_JOBS.push(job);
+          renderAiTray();
+        }
+        return;
+      }
+      if (isWatching(job)) return reviewAiJob(job);
+      job.bg = true;
+      renderAiTray();
+      if (!opts.quiet) toast(job.status === 'done' ? `AI photo ready: ${job.label}` : `AI photo failed: ${job.label}`);
+    });
+}
+const isWatching = (job) => !$('#modal').classList.contains('hidden') && $('#modalCard').dataset.job === String(job.id);
+function watchAiJob(job) {
+  const card = modal(`<h3>Making AI photo…</h3><p class="hint">${esc(job.label)} · using the "${esc(job.sec.name)}" reference photo. This takes about 45 seconds.</p><div class="empty"><div class="spinner" style="margin:auto"></div></div>
+    <div class="actions"><button class="btn primary" id="bg">Run in background</button></div>`);
+  card.classList.add('ai-wide');
+  card.dataset.job = job.id;
+  $('#bg').onclick = () => {
+    job.bg = true;
+    closeModal();
+    renderAiTray();
+  };
+}
+function dropAiJob(job) {
+  const i = AI_JOBS.indexOf(job);
+  if (i >= 0) AI_JOBS.splice(i, 1);
+  renderAiTray();
+}
+function reviewAiJob(job) {
+  if (job.status === 'running') return watchAiJob(job);
+  const { opts } = job;
+  const again = () => (dropAiJob(job), runAiPhoto(job.sec, job.productSrc, job.vars, { ...opts, background: false }));
+  // Reviewing from the tray: Discard just closes, rather than reopening the screen it came from.
+  const back = () => (opts.onBack && !job.bg ? opts.onBack() : closeModal());
+  if (job.status === 'error') {
+    modal(`<h3>Couldn't make the AI photo</h3><p class="hint">${esc(job.label)}</p><p style="color:var(--red)">${esc(job.error)}</p><div class="actions"><button class="btn ghost" id="cancel">Dismiss</button>${job.sec ? '<button class="btn primary" id="go">Try again</button>' : ''}</div>`);
+    $('#cancel').onclick = () => (dropAiJob(job), back());
+    $('#go')?.addEventListener('click', again);
+    return;
+  }
+  const blocked = opts.stale?.() ? opts.staleMsg || "This photo's listing isn't open any more." : '';
+  const res = job.res;
+  const card = modal(`
+    <h3>Use this AI photo?</h3>
+    <p class="hint" style="margin-top:-6px">${esc(job.label)}</p>
+    <div class="ai-compare">
+      <figure><img src="${job.productSrc}" alt=""/><figcaption>Product photo</figcaption></figure>
+      <figure><img src="${res.dataUrl}" alt=""/><figcaption>AI photo · ${esc(res.model)}${res.cost != null ? ` · cost about US$${res.cost.toFixed(3)}` : ''}</figcaption></figure>
+    </div>
+    <p class="hint">Check the details match the real item (logos, text, colours, which side things are printed on) before using it. Your product photo stays in the listing too.</p>
+    ${blocked ? `<p class="hint" style="color:var(--red)">${esc(blocked)}</p>` : ''}
+    <div class="actions"><button class="btn ghost" id="cancel">Discard</button><button class="btn ghost" id="later">Later</button><button class="btn" id="again">Try again</button><button class="btn primary" id="go" ${blocked ? 'disabled' : ''}>${esc(opts.useLabel || 'Use as main photo')}</button></div>`);
+  card.classList.add('ai-wide');
+  $('#cancel').onclick = () => (dropAiJob(job), back());
+  $('#later').onclick = () => (closeModal(), renderAiTray());
+  $('#again').onclick = again;
+  $('#go').onclick = () => (dropAiJob(job), opts.onUse(res.dataUrl));
+}
+// "AI photos" tab at the bottom of the sidebar; click it for the list of jobs.
+let aiTrayOpen = false;
+function renderAiTray() {
+  const tab = $('#aiTab');
+  const running = AI_JOBS.filter((j) => j.status === 'running').length;
+  const ready = AI_JOBS.filter((j) => j.status === 'done').length;
+  const failed = AI_JOBS.filter((j) => j.status === 'error').length;
+  tab.hidden = !AI_JOBS.length;
+  tab.classList.toggle('has-ready', !!ready);
+  tab.innerHTML = `${running ? '<div class="spinner small"></div>' : '<span>✨</span>'}<div><b>AI photos</b><small>${[running && `${running} making`, ready && `${ready} ready`, failed && `${failed} failed`].filter(Boolean).join(' · ')}</small></div>`;
+  tab.onclick = (e) => {
+    e.stopPropagation();
+    aiTrayOpen = !aiTrayOpen;
+    renderAiTray();
+  };
+  let tray = $('#aiTray');
+  if (!tray) {
+    tray = document.createElement('div');
+    tray.id = 'aiTray';
+    tray.onclick = (e) => e.stopPropagation();
+    document.body.append(tray);
+    document.addEventListener('click', () => aiTrayOpen && ((aiTrayOpen = false), renderAiTray()));
+  }
+  if (!AI_JOBS.length) aiTrayOpen = false;
+  tray.hidden = !aiTrayOpen;
+  tray.innerHTML = AI_JOBS.map(
+    (j) => `<div class="ai-job ${j.status}">
+      ${j.status === 'running' ? '<div class="spinner small"></div>' : j.status === 'done' ? '<span class="ai-dot ok">✓</span>' : '<span class="ai-dot err">!</span>'}
+      <div class="ai-job-text"><b>${esc(j.label)}</b><small>${j.status === 'running' ? 'Making AI photo…' : j.status === 'done' ? 'Ready to review' : 'Failed'}</small></div>
+      <button class="btn small ${j.status === 'done' ? 'primary' : ''}" data-job="${j.id}">${j.status === 'running' ? 'View' : j.status === 'done' ? 'Review' : 'Details'}</button>
+    </div>`,
+  ).join('');
+  $$('#aiTray [data-job]').forEach(
+    (b) =>
+      (b.onclick = () => {
+        aiTrayOpen = false;
+        renderAiTray();
+        reviewAiJob(AI_JOBS.find((j) => j.id === +b.dataset.job));
+      }),
+  );
+}
+async function addAiImage(dataUrl) {
+  const img = { id: ++imgId, status: 'loading', label: 'AI', ai: true };
+  F.images.unshift(img);
+  renderImages();
+  try {
+    img.src = await toJpeg(dataUrl);
+    img.status = 'ok';
+  } catch (err) {
+    img.status = 'error';
+    img.error = err.message;
+  }
+  renderImages();
+}
+
 /* attributes */
 async function loadAttrs() {
   if (!F.category.number) return;
@@ -1727,6 +1998,7 @@ function renderLive() {
                   <p class="hint">Listings on Trade Me's newer platform may not come through the API, same as Sold.</p>
                   <div class="bar">
                     <div class="msg" id="liveMsg">${sel.length ? `${sel.length} selected` : 'Tick listings to change them together.'}</div>
+                    <button class="btn" id="bulkAiBtn" ${sel.length && !LIVE.running ? '' : 'disabled'}>✨ AI hero photos (${sel.length})</button>
                     <button class="btn primary" id="dropBtn" ${sel.length && !LIVE.running ? '' : 'disabled'}>${LIVE.running ? 'Updating…' : `Edit price (${sel.length})`}</button>
                   </div>`
             }`
@@ -1755,6 +2027,7 @@ function renderLive() {
       }),
   );
   $('#dropBtn')?.addEventListener('click', () => dropPrices(sel));
+  $('#bulkAiBtn')?.addEventListener('click', () => bulkAiPhotos(sel));
   if (!LIVE.items && !LIVE.loading && !LIVE.error && accs.length) loadLive();
 }
 
@@ -1918,13 +2191,239 @@ function liveMenu(btn, item) {
   m.className = 'row-menu';
   m.style.top = `${r.bottom + 4}px`;
   m.style.right = `${window.innerWidth - r.right}px`;
-  m.innerHTML = '<button data-a="edit">Edit listing</button><button data-a="open">Open on Trade Me</button><button data-a="withdraw" class="danger">Withdraw…</button>';
+  m.innerHTML = '<button data-a="edit">Edit listing</button><button data-a="photos">Edit photos</button><button data-a="ai">✨ AI hero photo</button><button data-a="open">Open on Trade Me</button><button data-a="withdraw" class="danger">Withdraw…</button>';
   document.body.append(m);
   const close = () => (m.remove(), document.removeEventListener('click', close));
   setTimeout(() => document.addEventListener('click', close));
   m.querySelector('[data-a=edit]').onclick = () => (close(), editListing(item));
+  m.querySelector('[data-a=photos]').onclick = () => (close(), editLivePhotos(item));
+  m.querySelector('[data-a=ai]').onclick = () => (close(), editLivePhotos(item, { ai: true }));
   m.querySelector('[data-a=open]').onclick = () => (close(), api.openExternal(item.url));
   m.querySelector('[data-a=withdraw]').onclick = () => (close(), withdrawListing(item));
+}
+
+// The section (with a reference photo) whose category matches a listing's category number, else the
+// first section that has a reference photo.
+function aiSectionFor(accountId, category) {
+  const secs = profList(accountId).filter((s) => s.aiRef);
+  const cat = String(category || '').replace(/\D/g, '');
+  return secs.find((s) => cat && String(s.category?.number || '').replace(/-$/, '').split('-').pop() === cat.padStart(4, '0')) || secs[0] || null;
+}
+
+// AI hero photos for many live listings at once. Each runs in the background (AI photos tab), 3 at a
+// time. Reviewing one and clicking "Use as main photo" saves it to that listing on Trade Me; with
+// auto-approve on they're saved as soon as they're made.
+function bulkAiPhotos(list) {
+  if (!S.openai?.hasKey) return toast('Add your OpenAI API key in Settings → AI photos first.');
+  const accIds = [...new Set(list.map((i) => i.accountId))];
+  const secs = accIds.length === 1 ? profList(accIds[0]).filter((s) => s.aiRef) : [];
+  if (!list.some((i) => profList(i.accountId).some((s) => s.aiRef))) return toast('No section has a reference photo yet. Add one under Defaults → section → AI photo.');
+  const per = (() => {
+    const u = S.aiUsage?.[`${S.ai?.model || 'gpt-image-2.6-sunburst'}|${S.ai?.quality || 'high'}`];
+    return u?.n ? u.usd / u.n : { medium: 0.04, high: 0.06, xhigh: 0.1 }[S.ai?.quality || 'high'];
+  })();
+  modal(`
+    <h3>AI hero photos</h3>
+    <p class="hint" style="margin-top:-6px">${list.length} listing${list.length > 1 ? 's' : ''} selected · about US$${(per * list.length).toFixed(2)} (≈ NZ$${(per * list.length * 1.7).toFixed(2)})</p>
+    <label class="f">Reference photo
+      <select id="baSec">
+        <option value="">Match each listing's category (else first section with a photo)</option>
+        ${secs.map((s) => `<option value="${esc(s.id)}">${esc(s.name)}</option>`).join('')}
+      </select>
+    </label>
+    <p class="hint">They're made in the background, 3 at a time. Watch them in the <b>AI photos</b> tab at the bottom of the sidebar.
+    ${S.ai?.autoApprove ? '<b>Auto-approve is on:</b> each photo is saved to its listing on Trade Me as the main photo as soon as it\'s ready.' : 'Review each one there; <b>Use as main photo</b> saves it to that listing on Trade Me.'}</p>
+    <div class="actions"><button class="btn ghost" id="cancel">Cancel</button><button class="btn primary" id="go">Make ${list.length} photo${list.length > 1 ? 's' : ''}</button></div>`);
+  $('#cancel').onclick = closeModal;
+  $('#go').onclick = () => {
+    const pick = $('#baSec').value;
+    closeModal();
+    toast(`Making ${list.length} AI photo${list.length > 1 ? 's' : ''} in the background`);
+    runPool(list, 3, (item) => bulkAiOne(item, pick));
+  };
+}
+// Run fn over items, at most n at once.
+async function runPool(items, n, fn) {
+  const queue = [...items];
+  await Promise.all(Array.from({ length: Math.min(n, queue.length) }, async () => {
+    while (queue.length) await fn(queue.shift()).catch(() => {});
+  }));
+}
+async function bulkAiOne(item, secId) {
+  const fail = (msg) => {
+    AI_JOBS.push({ id: ++aiJobSeq, label: item.title, status: 'error', error: msg, opts: {}, bg: true });
+    renderAiTray();
+  };
+  let L;
+  try {
+    L = await api.getListing({ accountId: item.accountId, listingId: item.listingId });
+  } catch (err) {
+    return fail(err.message);
+  }
+  const s = (secId && profList(item.accountId).find((x) => x.id === secId && x.aiRef)) || aiSectionFor(item.accountId, L.Category);
+  if (!s) return fail("This account's sections have no reference photo.");
+  const first = (L.Photos || [])[0];
+  if (!first) return fail('This listing has no photo to work from.');
+  let productSrc;
+  try {
+    productSrc = await toJpeg(await api.fetchImage(first.Value?.FullSize || first.Value?.Large));
+  } catch (err) {
+    return fail(`Couldn't load its photo: ${err.message}`);
+  }
+  // Saves the AI photo in front of the listing's current photos (re-read at save time).
+  const saveToListing = async (dataUrl) => {
+    const fresh = await api.getListing({ accountId: item.accountId, listingId: item.listingId });
+    const keep = (fresh.PhotoIds || []).slice(0, 19).map((id) => ({ id }));
+    await api.saveListingPhotos({ accountId: item.accountId, listingId: item.listingId, photos: [{ base64: (await toJpeg(dataUrl)).split(',')[1] }, ...keep] });
+    dataChanged('live');
+  };
+  return runAiPhoto(s, productSrc, aiVars(s, { name: L.Title, sku: L.SKU }), {
+    label: L.Title,
+    background: true,
+    quiet: true,
+    useLabel: 'Use as main photo (saves to Trade Me)',
+    onUse: async (dataUrl) => {
+      closeModal();
+      try {
+        await saveToListing(dataUrl);
+        toast(`AI photo saved: ${L.Title}`);
+      } catch (err) {
+        toast(`Couldn't save: ${err.message}`);
+      }
+    },
+    autoUse: saveToListing,
+  });
+}
+
+// Photos on a live listing: reorder, remove, add, or make an AI hero photo, then save to Trade Me.
+async function editLivePhotos(item, { ai = false } = {}) {
+  modal(`<h3>Edit photos</h3><div class="empty"><div class="spinner" style="margin:auto"></div></div>`);
+  let L;
+  try {
+    L = await api.getListing({ accountId: item.accountId, listingId: item.listingId });
+  } catch (err) {
+    modal(`<h3>Edit photos</h3><p style="color:var(--red)">${esc(err.message)}</p><div class="actions"><button class="btn" id="cancel">Close</button></div>`);
+    return ($('#cancel').onclick = closeModal);
+  }
+  const st = {
+    photos: (L.Photos || []).map((p) => ({ id: p.Key, src: p.Value?.Large || p.Value?.FullSize, full: p.Value?.FullSize || p.Value?.Large })),
+    secs: profList(item.accountId),
+  };
+  st.secId = (aiSectionFor(item.accountId, L.Category) || st.secs[0])?.id;
+  const sec = () => st.secs.find((s) => s.id === st.secId);
+
+  const render = () => {
+    const card = modal(`
+      <h3>Edit photos</h3>
+      <p class="hint" style="margin:-6px 0 16px">${esc(L.Title)} · #${item.listingId} · ${esc(item.nickname)}</p>
+      <div class="images" id="lpImgs">
+        ${st.photos
+          .map(
+            (p, n) => `<div class="img" draggable="true" data-i="${n}"><img src="${esc(p.src)}" data-full="${esc(p.full || p.src)}" /><span class="tag">${n === 0 ? 'Main' : p.ai ? 'AI' : p.id ? '' : 'New'}</span><button class="x" data-rm="${n}">×</button></div>`,
+          )
+          .join('')}
+        <div class="drop" id="lpDrop">＋<br/>Add photos</div>
+      </div>
+      <input type="file" id="lpFile" accept="image/*" multiple hidden />
+      <div class="lp-ai">
+        <label class="f" style="margin:0;flex:1">Reference photo from section <select id="lpSec">${st.secs
+          .map((s) => `<option value="${esc(s.id)}" ${s.id === st.secId ? 'selected' : ''} ${s.aiRef ? '' : 'disabled'}>${esc(s.name)}${s.aiRef ? '' : ' (no reference photo)'}</option>`)
+          .join('')}</select></label>
+        <button class="btn" id="lpAi">✨ Make AI hero photo</button>
+      </div>
+      <p class="hint">Drag to reorder; the first photo is the main one. The AI photo is made from the first non-AI photo.</p>
+      <p class="hint" id="lpMsg" style="color:var(--red)"></p>
+      <div class="actions"><button class="btn ghost" id="cancel">Cancel</button><button class="btn primary" id="go">Save photos</button></div>`);
+    card.classList.add('ai-wide');
+    $$('#lpImgs [data-rm]').forEach((b) => (b.onclick = () => (st.photos.splice(+b.dataset.rm, 1), render())));
+    $('#lpDrop').onclick = () => $('#lpFile').click();
+    $('#lpFile').onchange = (e) => addFiles(e.target.files);
+    const box = $('#lpImgs');
+    box.ondragover = (e) => e.preventDefault();
+    box.ondrop = (e) => {
+      e.preventDefault();
+      if (e.dataTransfer.files.length) return addFiles(e.dataTransfer.files);
+      const from = +e.dataTransfer.getData('text/plain');
+      const to = +e.target.closest('[data-i]')?.dataset.i;
+      if (Number.isNaN(from) || Number.isNaN(to) || from === to) return;
+      const [moved] = st.photos.splice(from, 1);
+      st.photos.splice(to, 0, moved);
+      render();
+    };
+    $$('#lpImgs [data-i]').forEach((t) => t.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/plain', t.dataset.i)));
+    $('#lpSec').onchange = (e) => (st.secId = e.target.value);
+    $('#lpAi').onclick = makeAi;
+    $('#cancel').onclick = closeModal;
+    $('#go').onclick = save;
+  };
+
+  async function addFiles(files) {
+    for (const f of files) {
+      if (!f.type.startsWith('image/')) continue;
+      const raw = await new Promise((res) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.readAsDataURL(f);
+      });
+      try {
+        st.photos.push({ src: await toJpeg(raw) });
+      } catch (err) {
+        toast(err.message);
+      }
+    }
+    render();
+  }
+
+  async function makeAi() {
+    const s = sec();
+    const product = st.photos.find((p) => !p.ai);
+    const problem = !S.openai?.hasKey ? 'Add your OpenAI API key in Settings → AI photos first.' : !s?.aiRef ? 'Pick a section that has a reference photo (Defaults → section → AI photo).' : !product ? 'This listing needs a product photo to work from.' : '';
+    if (problem) return ($('#lpMsg').textContent = problem);
+    $('#lpAi').disabled = true;
+    $('#lpAi').textContent = 'Getting photo…';
+    let productSrc;
+    try {
+      productSrc = product.id ? await toJpeg(await api.fetchImage(product.full)) : product.src;
+    } catch (err) {
+      $('#lpMsg').textContent = `Couldn't load the product photo: ${err.message}`;
+      $('#lpAi').disabled = false;
+      $('#lpAi').textContent = '✨ Make AI hero photo';
+      return;
+    }
+    runAiPhoto(s, productSrc, aiVars(s, { name: L.Title, sku: L.SKU }), {
+      label: L.Title,
+      onBack: render,
+      onUse: async (dataUrl) => {
+        st.photos.unshift({ src: await toJpeg(dataUrl), ai: true });
+        render();
+      },
+      // Auto-approve: AI photo first, then the listing's photos as they were in this window, saved to Trade Me.
+      autoUse: async (dataUrl) => {
+        st.photos.unshift({ src: await toJpeg(dataUrl), ai: true });
+        await api.saveListingPhotos({ accountId: item.accountId, listingId: item.listingId, photos: st.photos.slice(0, 20).map((p) => (p.id ? { id: p.id } : { base64: p.src.split(',')[1] })) });
+        dataChanged('live');
+      },
+    });
+  }
+
+  async function save() {
+    if (!st.photos.length) return ($('#lpMsg').textContent = 'A listing needs at least one photo.');
+    $('#go').disabled = $('#cancel').disabled = true;
+    $('#go').textContent = 'Saving…';
+    try {
+      await api.saveListingPhotos({ accountId: item.accountId, listingId: item.listingId, photos: st.photos.map((p) => (p.id ? { id: p.id } : { base64: p.src.split(',')[1] })) });
+      closeModal();
+      toast('Photos updated');
+      dataChanged('live');
+    } catch (err) {
+      $('#lpMsg').textContent = err.message;
+      $('#go').disabled = $('#cancel').disabled = false;
+      $('#go').textContent = 'Save photos';
+    }
+  }
+
+  render();
+  if (ai) makeAi();
 }
 
 // Withdraw can't be undone, so it always asks first.
@@ -2067,6 +2566,7 @@ async function loadSold() {
   }
   SOLD.loading = false;
   if (current === 'sold') renderSold();
+  loadTracking();
 }
 
 function renderSold() {
@@ -2123,18 +2623,25 @@ function renderSold() {
               !items.length
                 ? `<div class="empty">No sales in the last ${SOLD.days} days.</div>`
                 : `<div class="rl-table sold-table ${showAcc ? 'with-acc' : ''}">
-                    <div class="sold-row rl-head"><span></span><span>Listing</span>${showAcc ? '<span>Account</span>' : ''}<span>Sold</span><span>Paid via</span><span>Total</span><span>Fees</span><span>Payout</span></div>
+                    <div class="sold-row rl-head"><span></span><span>Listing</span>${showAcc ? '<span>Account</span>' : ''}<span>Sold</span><span>Paid via</span><span>Total</span><span>Fees</span><span>Payout</span><span></span></div>
                     ${items
                       .map(
                         (i) => `<div class="sold-row">
                           ${i.picture ? `<img src="${esc(i.picture)}" alt=""/>` : '<span class="rl-noimg"></span>'}
-                          <span class="rl-title"><b>${esc(i.title)}</b><a href="#" data-url="${esc(i.url)}">${i.qty > 1 ? `${i.qty} × ` : ''}to ${esc(i.buyer || 'buyer')}${i.status ? ' · ' + esc(i.status) : ''}</a></span>
+                          <span class="rl-title"><b>${esc(i.title)}</b><a href="#" data-url="${esc(i.url)}">${i.qty > 1 ? `${i.qty} × ` : ''}to ${esc(i.buyer || 'buyer')}${i.status ? ' · ' + esc(i.status) : ''}</a>${trackLine(i)}</span>
                           ${showAcc ? `<span class="rl-muted">${esc(i.nickname)}</span>` : ''}
                           <span class="rl-muted">${i.soldDate ? when(i.soldDate) : ''}</span>
                           <span>${i.method ? `<i class="pay-tag p${i.method}">${PAY_NAME[i.method] || 'Other'}</i>` : `<i class="pay-tag">${i.pending ? 'Pending' : 'Unpaid'}</i>`}</span>
                           <span class="rl-num">${dollars(i.total)}</span>
                           <span class="rl-muted" title="${i.processing ? `${PAY_NAME[i.method] || 'Payment'} fee ${money(i.processing)}` : ''}${i.processing && i.success ? ' + ' : ''}${i.success ? `success fee ${money(i.success)}` : ''}">${i.processing + i.success ? '−' + money(i.processing + i.success) : '—'}</span>
                           <span class="rl-num payout-num">${dollars(i.payout)}</span>
+                          ${
+                            i.parcels?.length
+                              ? `<button class="btn small" data-track="${i.purchaseId}" title="Delivery status from NZ Post">Track</button>`
+                              : i.purchaseId && !i.pickup
+                                ? `<button class="btn small ${i.booked ? '' : 'primary'}" data-courier="${i.purchaseId}" title="Book a courier for this sale on Trade Me">${i.booked ? 'Booking' : 'Book courier'}</button>`
+                                : '<span></span>'
+                          }
                         </div>`,
                       )
                       .join('')}
@@ -2150,6 +2657,9 @@ function renderSold() {
             }`
     }`;
 
+  const saleBy = (pid) => (SOLD.items || []).find((i) => String(i.purchaseId) === pid);
+  $$('[data-courier]').forEach((b) => (b.onclick = () => bookCourier(saleBy(b.dataset.courier))));
+  $$('[data-track]').forEach((b) => (b.onclick = () => showTracking(saleBy(b.dataset.track))));
   $('#soldAcc').onchange = (e) => {
     SOLD.scope = e.target.value;
     loadSold();
@@ -2297,6 +2807,74 @@ function renderQuestions() {
   $$('.q-reply button').forEach((b) => (b.onclick = () => sendAnswer(sel, +b.dataset.q)));
   if (sel?.koru) wireTmView(sel);
   if (!Q.data && !Q.loading && !Q.error && Q.accountId) loadQuestions();
+}
+
+// Trade Me's Book a courier wizard for one sale, inside the app and logged in as the selling account,
+// so the booking is tied to the purchase (buyer's address, shows to the buyer). You pick the courier
+// and parcel size and confirm on Trade Me's page; nothing is booked or paid automatically.
+// Opens in its own window (logged in as the selling account). When it closes, Sold reloads so the
+// tracking number Trade Me attaches to the sale shows up.
+function bookCourier(sale) {
+  if (!sale) return;
+  api.openCourier({ accountId: sale.accountId, purchaseId: sale.purchaseId, listingId: sale.listingId, title: sale.title }).catch((e) => toast(e.message));
+}
+api.onCourierClosed(() => {
+  // Trade Me can take a moment to attach the tracking number; check now and again shortly.
+  loadSold();
+  setTimeout(() => loadSold(), 20000);
+});
+
+// NZ Post delivery status per tracking number, filled in after Sold loads.
+SOLD.track = {};
+async function loadTracking() {
+  const refs = (SOLD.items || []).flatMap((i) => (i.parcels || []).map((p) => p.ref));
+  if (!refs.length) return;
+  try {
+    Object.assign(SOLD.track, await api.trackStatus(refs));
+  } catch {}
+  if (current === 'sold') renderSold();
+}
+function trackLine(sale) {
+  const p = sale.parcels?.[0];
+  if (!p) return sale.booked ? '<span class="trk trk-wait">Courier booked · waiting for tracking</span>' : '';
+  const t = SOLD.track[p.ref];
+  const cls = !t ? 'trk-wait' : t.error ? 'trk-err' : t.delivered ? 'trk-done' : 'trk-go';
+  const text = !t ? 'Checking NZ Post…' : t.error ? 'Couldn\'t reach NZ Post' : t.status;
+  return `<span class="trk ${cls}">${esc(p.courier || 'Courier')} · ${esc(text)}${sale.parcels.length > 1 ? ` · +${sale.parcels.length - 1} more` : ''}</span>`;
+}
+async function showTracking(sale) {
+  if (!sale) return;
+  const card = modal(`<h3>Tracking</h3><div class="empty"><div class="spinner" style="margin:auto"></div></div>`);
+  let data;
+  try {
+    data = await api.trackStatus(sale.parcels.map((p) => p.ref));
+    Object.assign(SOLD.track, data);
+  } catch (e) {
+    data = {};
+  }
+  const when = (iso) => new Date(iso).toLocaleString('en-NZ', { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+  modal(`
+    <h3>Tracking</h3>
+    <p class="hint" style="margin:-6px 0 16px">${esc(sale.title)} · to ${esc(sale.buyer || 'buyer')}</p>
+    ${sale.parcels
+      .map((p) => {
+        const t = data[p.ref] || {};
+        return `<div class="trk-box">
+          <div class="trk-head"><b>${esc(p.courier || 'Courier')}</b><code>${esc(p.ref)}</code><a href="#" data-url="${esc(t.url || p.url)}">Open on NZ Post</a></div>
+          ${
+            t.error
+              ? `<p style="color:var(--red)">${esc(t.error)}</p>`
+              : (t.events || []).length
+                ? `<ol class="trk-events">${t.events.map((e) => `<li><b>${esc(e.status)}</b><span>${esc(e.description)}</span><small>${when(e.at)}</small></li>`).join('')}</ol>`
+                : '<p class="hint">No tracking events yet.</p>'
+          }
+        </div>`;
+      })
+      .join('')}
+    <div class="actions"><button class="btn" id="cancel">Close</button></div>`);
+  $('#cancel').onclick = closeModal;
+  $$('#modalCard [data-url]').forEach((a) => (a.onclick = (e) => (e.preventDefault(), api.openExternal(a.dataset.url))));
+  if (current === 'sold') renderSold();
 }
 
 // Trade Me's own listing page, logged in per account (the session is kept between launches).
@@ -2577,6 +3155,45 @@ function renderSettings() {
     </div>
 
     <div class="card">
+      <h2>AI photos (OpenAI)</h2>
+      <div class="row">
+        <label class="f">API key <input id="oaKey" type="password" spellcheck="false" autocomplete="off" placeholder="${S.openai?.hasKey ? '•••••••• saved — paste to replace' : 'sk-…'}" /></label>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn small" id="oaTest" ${S.openai?.hasKey ? '' : 'disabled'}>Test</button>
+        ${S.openai?.hasKey ? '<button class="btn small danger" id="oaClear">Remove</button>' : ''}
+        <span class="hint" id="oaStatus" style="margin:0">${S.openai?.hasKey ? 'Key saved (encrypted on this computer).' : 'Not connected.'}</span>
+      </div>
+      <p class="hint">Used to make AI hero photos. Create a key at platform.openai.com → API keys. Each photo is billed to your OpenAI account.</p>
+      <div class="row" style="margin-top:12px">
+        <label class="f">Model <select id="aiModel"><option value="gpt-image-2.6-sunburst">GPT Image 2.6 Sunburst (most accurate)</option><option value="gpt-image-2.6-flare">GPT Image 2.6 Flare (faster)</option></select></label>
+        <label class="f">Quality <select id="aiQuality"><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option></select></label>
+      </div>
+      <div id="aiCost" class="ai-cost"></div>
+      <label class="ai-auto"><input type="checkbox" id="aiAuto" ${S.ai?.autoApprove ? 'checked' : ''} /> <span><b>Auto-approve AI photos</b><small>Skip the review: on New listing the photo goes straight in as the main photo; on Live it's saved to the listing on Trade Me as soon as it's ready.</small></span></label>
+      <label class="f" style="margin-top:4px"><span>Prompt <a href="#" id="aiReset" style="float:right;font-weight:400">Reset to default</a></span><textarea id="aiPrompt" rows="12" spellcheck="false"></textarea></label>
+      <p class="hint">Image 1 is the section's reference photo (Defaults → section → AI photo), Image 2 is the listing's product photo. Placeholders: <code>{product}</code> (brand + name) <code>{brand}</code> <code>{name}</code> <code>{colour}</code> <code>{sku}</code> <code>{category}</code> (the section's item word, e.g. "trading card box") <code>{section}</code></p>
+    </div>
+
+    <div class="card">
+      <h2>Discord</h2>
+      <div class="row">
+        <label class="f">Webhook URL <input id="dcUrl" type="password" spellcheck="false" placeholder="${S.discord?.hasUrl ? '•••••••• saved — paste to replace' : 'https://discord.com/api/webhooks/…'}" /></label>
+      </div>
+      <div class="chips" id="dcEvents" style="margin:4px 0 12px">
+        ${[['activity', 'Activity (listed, edits, price drops, withdrawals, relists)'], ['sales', 'New sales'], ['questions', 'New questions']]
+          .map(([k, l]) => `<button class="chip ${S.discord?.events?.[k] !== false ? 'on' : ''}" data-dc="${k}">${l}</button>`)
+          .join('')}
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn small" id="dcTest" ${S.discord?.hasUrl ? '' : 'disabled'}>Send test</button>
+        ${S.discord?.hasUrl ? '<button class="btn small danger" id="dcClear">Remove</button>' : ''}
+        <span class="hint" id="dcStatus" style="margin:0">${S.discord?.hasUrl ? 'Webhook saved.' : 'Not connected.'}</span>
+      </div>
+      <p class="hint">In Discord: channel settings → Integrations → Webhooks → New Webhook → Copy Webhook URL. New sales and questions are checked every 3 minutes while the app is open; ones from before you connect aren't posted.</p>
+    </div>
+
+    <div class="card">
       <h2>Updates</h2>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn small" id="updCheck">Check for updates</button>
@@ -2586,6 +3203,100 @@ function renderSettings() {
       <p class="hint">Checks GitHub for a newer release, downloads it and restarts the app to install it. Your accounts and settings are kept.</p>
     </div>
   </div>`;
+
+  const oaStatus = (text, color = '') => {
+    const st = $('#oaStatus');
+    st.textContent = text;
+    st.style.color = color;
+  };
+  $('#oaKey').onchange = async (e) => {
+    const key = e.target.value.trim();
+    if (!key) return;
+    if (!/^sk-[\w-]{20,}$/.test(key)) return oaStatus("That doesn't look like an OpenAI API key (they start with sk-).", 'var(--red)');
+    S = await api.updateSettings({ openai: { key } });
+    renderSettings();
+    $('#oaTest').click();
+  };
+  // AI photo model/quality/prompt. The prompt box shows the built-in default until you change it;
+  // a prompt identical to the default is stored as '' so future default improvements still apply.
+  $('#aiModel').value = S.ai?.model || 'gpt-image-2.6-sunburst';
+  $('#aiQuality').value = S.ai?.quality || 'high';
+  // Cost per photo: your own measured average where you have one, otherwise an estimate.
+  // Estimates: ~2,200 input + ~1,550 output tokens at high (measured); medium/extra high scaled.
+  const AI_EST = { medium: 0.04, high: 0.06, xhigh: 0.1 };
+  const renderAiCost = () => {
+    const model = $('#aiModel').value;
+    const rows = [['medium', 'Medium'], ['high', 'High'], ['xhigh', 'Extra high']].map(([q, label]) => {
+      const u = S.aiUsage?.[`${model}|${q}`];
+      const avg = u?.n ? u.usd / u.n : null;
+      const v = avg ?? AI_EST[q];
+      const on = q === $('#aiQuality').value;
+      return `<div class="${on ? 'on' : ''}"><span>${label}</span><b>US$${v.toFixed(2)}</b><small>≈ NZ$${(v * 1.7).toFixed(2)} · ${avg != null ? `your average of ${u.n}` : 'estimate'}</small></div>`;
+    });
+    $('#aiCost').innerHTML = `<p class="hint" style="margin:0 0 6px">Approx. cost per photo with ${model.endsWith('flare') ? 'Flare' : 'Sunburst'} (both bill at the same token rates; Flare is faster, not cheaper):</p><div class="ai-cost-row">${rows.join('')}</div>`;
+  };
+  renderAiCost();
+  $('#aiAuto').onchange = async (e) => (S = await api.updateSettings({ ai: { autoApprove: e.target.checked } }));
+  $('#aiModel').onchange = async (e) => ((S = await api.updateSettings({ ai: { model: e.target.value } })), renderAiCost());
+  $('#aiQuality').onchange = async (e) => ((S = await api.updateSettings({ ai: { quality: e.target.value } })), renderAiCost());
+  api.aiDefaults().then((d) => {
+    const box = $('#aiPrompt');
+    if (!box) return;
+    box.value = S.ai?.prompt?.trim() ? S.ai.prompt : d.prompt;
+    box.oninput = debounce(async () => (S = await api.updateSettings({ ai: { prompt: box.value.trim() === d.prompt.trim() ? '' : box.value } })), 500);
+    $('#aiReset').onclick = async (e) => {
+      e.preventDefault();
+      box.value = d.prompt;
+      S = await api.updateSettings({ ai: { prompt: '' } });
+    };
+  });
+  $('#oaTest')?.addEventListener('click', async () => {
+    oaStatus('Testing…');
+    try {
+      oaStatus(await api.openaiTest(), 'var(--green)');
+    } catch (err) {
+      oaStatus(err.message, 'var(--red)');
+    }
+  });
+  $('#oaClear')?.addEventListener('click', async () => {
+    S = await api.updateSettings({ openai: { key: '' } });
+    renderSettings();
+  });
+  const dcStatus = (text, color = '') => {
+    const st = $('#dcStatus');
+    st.textContent = text;
+    st.style.color = color;
+  };
+  $('#dcUrl').onchange = async (e) => {
+    const url = e.target.value.trim();
+    if (!url) return;
+    if (!/^https:\/\/((ptb|canary)\.)?discord(app)?\.com\/api\/webhooks\/\d+\/[\w-]+/.test(url)) return dcStatus("That isn't a Discord webhook URL. It starts with https://discord.com/api/webhooks/", 'var(--red)');
+    S = await api.updateSettings({ discord: { url } });
+    renderSettings();
+    $('#dcTest').click();
+    api.discordPoll().catch(() => {}); // records existing sales/questions so only new ones are posted
+  };
+  $('#dcTest')?.addEventListener('click', async () => {
+    dcStatus('Sending…');
+    try {
+      await api.discordTest();
+      dcStatus('Sent. Check your Discord channel.', 'var(--green)');
+    } catch (err) {
+      dcStatus(err.message, 'var(--red)');
+    }
+  });
+  $('#dcClear')?.addEventListener('click', async () => {
+    S = await api.updateSettings({ discord: { url: '' } });
+    renderSettings();
+  });
+  $$('#dcEvents [data-dc]').forEach(
+    (b) =>
+      (b.onclick = async () => {
+        const on = !b.classList.contains('on');
+        b.classList.toggle('on', on);
+        S = await api.updateSettings({ discord: { events: { [b.dataset.dc]: on } } });
+      }),
+  );
 
   api.appVersion().then((v) => $('#appVer') && ($('#appVer').textContent = v)).catch(() => {});
   $('#updCheck').onclick = async () => {
@@ -2888,7 +3599,7 @@ function renderSections() {
         <button class="btn small" id="addSec">＋ Add section</button>
       </div>
       <div class="tabs" id="subTabs">
-        ${[['general', 'General'], ['templates', 'Templates'], ['shipping', 'Shipping'], ['payment', 'Payment']].map(([k, l]) => `<button data-t="${k}">${l}</button>`).join('')}
+        ${[['general', 'General'], ['templates', 'Templates'], ['shipping', 'Shipping'], ['payment', 'Payment'], ['ai', 'AI photo']].map(([k, l]) => `<button data-t="${k}">${l}</button>`).join('')}
       </div>
       <div class="cost-strip" id="secCost"></div>
       <div class="ship-ref-err hidden" id="shipRefErr"></div>
@@ -2911,6 +3622,23 @@ function renderSections() {
           <div id="secExtrasBody"></div>
         </details>
         ${profiles.length > 1 ? `<div style="margin-top:18px"><button class="btn small danger" id="delSec">Delete "${esc(p.name)}" section</button></div>` : ''}
+      </div>
+
+      <div data-panel="ai">
+        <div class="ai-ref">
+          <div class="ai-ref-img" id="aiRefImg">${p.aiRef ? '<div class="spinner"></div>' : '<span>No reference photo</span>'}</div>
+          <div class="ai-ref-side">
+            <p class="hint" style="margin:0 0 4px"><b>Your setup photo.</b> Take one real photo of an item where you'd shoot it.</p>
+            <p class="hint" style="margin:0 0 14px">AI photos swap the listing's product into this scene, keeping the same background and lighting.</p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn small primary" id="aiRefPick">${p.aiRef ? 'Replace photo' : 'Add reference photo'}</button>
+              ${p.aiRef ? '<button class="btn small danger" id="aiRefRm">Remove</button>' : ''}
+            </div>
+            <input type="file" id="aiRefFile" accept="image/jpeg,image/png,image/webp" hidden />
+            <label class="f" style="margin-top:14px">What kind of item is it? (optional) <input id="aiCat" value="${esc(p.aiCategory || '')}" placeholder="${esc(String(p.category?.path || '').split('›').pop().trim().toLowerCase() || 'e.g. trading card box')}" /></label>
+            <p class="hint">A couple of words telling the AI what it's placing, e.g. "trading card box" or "pair of sneakers". Leave blank to use the category name shown. Fills <code>{category}</code> in the prompt (Settings → AI photos).</p>
+          </div>
+        </div>
       </div>
 
       <div data-panel="payment">
@@ -3026,6 +3754,37 @@ function renderSections() {
   $('#dur').onchange = (e) => ((p.duration = +e.target.value), save());
   $('#cond').onchange = (e) => ((p.isBrandNew = e.target.value === '1'), save());
   $('#pickup').onchange = (e) => ((p.pickup = +e.target.value), save());
+  // AI photo reference for this section (stored as a file; the section keeps its name).
+  if (p.aiRef)
+    api.aiRef(p.aiRef).then((src) => {
+      const box = $('#aiRefImg');
+      if (box) box.innerHTML = src ? `<img src="${src}" alt=""/>` : '<span>Reference photo missing — add it again</span>';
+    });
+  $('#aiRefPick').onclick = () => $('#aiRefFile').click();
+  $('#aiRefFile').onchange = async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const raw = await new Promise((res) => {
+      const r = new FileReader();
+      r.onload = () => res(r.result);
+      r.readAsDataURL(f);
+    });
+    try {
+      // Re-encode as JPEG (max 2000px) so AVIF/HEIC-ish oddities and huge phone photos are handled.
+      p.aiRef = await api.aiSaveRef({ key: `${defAcc || 'all'}-${p.id}`, dataUrl: await toJpeg(raw) });
+      save();
+      renderSections();
+    } catch (err) {
+      toast(err.message);
+    }
+  };
+  $('#aiRefRm')?.addEventListener('click', () => {
+    delete p.aiRef;
+    save();
+    renderSections();
+  });
+  $('#aiCat').oninput = (e) => ((p.aiCategory = e.target.value), save());
+
   categoryPicker($('#setCat'), p.category, (cat) => {
     p.category = cat;
     save();
