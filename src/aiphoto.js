@@ -64,6 +64,12 @@ function readRef(file) {
   const type = Object.entries(EXT).find(([, e]) => p.endsWith(e))?.[0] || 'image/jpeg';
   return { type, buffer: fs.readFileSync(p) };
 }
+// Put back a reference photo from a backup, under its original file name.
+function writeRef(file, dataUrl) {
+  const { buffer } = parseDataUrl(dataUrl);
+  fs.mkdirSync(refsDir(), { recursive: true });
+  fs.writeFileSync(path.join(refsDir(), path.basename(String(file))), buffer);
+}
 const refDataUrl = (file) => {
   const r = readRef(file);
   return r ? `data:${r.type};base64,${r.buffer.toString('base64')}` : null;
@@ -167,4 +173,4 @@ function deleteJob(id) {
   return true;
 }
 
-module.exports = { DEFAULT_PROMPT, MODELS, QUALITIES, saveRef, refDataUrl, generate, saveJob, loadJobs, deleteJob };
+module.exports = { DEFAULT_PROMPT, MODELS, QUALITIES, saveRef, writeRef, refDataUrl, generate, saveJob, loadJobs, deleteJob };

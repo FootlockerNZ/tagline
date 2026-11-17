@@ -43,6 +43,17 @@ const DEFAULTS = {
   // Discord webhook (URL encrypted). events: which kinds of message to send.
   // seen: sale/question ids already announced, so each is only posted once.
   discord: { url: '', events: { activity: true, sales: true, questions: true }, seen: { sales: [], questions: [] }, primed: false },
+  // Settings → General.
+  general: {
+    startTab: 'new', // page Tagline opens on
+    startOnLogin: false,
+    checkUpdates: true, // look for a new version when Tagline opens
+    notify: { sales: true, questions: true }, // desktop notifications
+    pollMins: 3, // how often new sales/questions are checked (desktop + Discord)
+    usdNzd: 1.7, // for showing AI costs in NZ$
+    lowestOldDays: 3, // 🔎 Lowest results fade after this many days
+    lowestKeepDays: 30, // …and are forgotten after this many
+  },
 };
 
 const PROFILE_KEYS = ['category', 'listingType', 'duration', 'isBrandNew', 'allowOffers', 'pickup', 'payment', 'shipping', 'titleTemplate', 'descriptionTemplate'];
@@ -234,4 +245,58 @@ function setArchived(entries, archived) {
 }
 const isArchived = (listingId) => !!load().relistArchive[listingId];
 
-module.exports = { load, publicSettings, updateSettings, consumer, traceToken, traceLogin, addAccount, removeAccount, getAccount, addHistory, setArchived, isArchived, discordConfig, discordSeen, openaiKey };
+const clearHistory = () => save({ ...load(), history: [] });
+
+// Backup: everything except secrets (API secrets, account logins, Trace login, OpenAI key, Discord
+// webhook). Accounts go in by name and member number only, so sections can be matched back to them.
+function backup() {
+  const { consumer: c, accounts, trace, openai, discord: d, ...rest } = structuredClone(load());
+  return {
+    tagline: 'backup',
+    version: 1,
+    at: new Date().toISOString(),
+    settings: { ...rest, consumer: { production: { key: c.production.key }, sandbox: { key: c.sandbox.key } }, discord: { events: d.events } },
+    accounts: accounts.map(({ id, env, nickname, memberId }) => ({ id, env, nickname, memberId })),
+  };
+}
+
+// Restore a backup over this computer's settings. Keys, logins and connected accounts here are kept;
+// sections for an account are matched to the same Trade Me member logged in here. History is merged.
+function restore(b) {
+  if (b?.tagline !== 'backup' || !b.settings) throw new Error("That file isn't a Tagline backup.");
+  const s = load();
+  const r = b.settings;
+  const idMap = {};
+  const missing = [];
+  for (const a of b.accounts || []) {
+    const here = s.accounts.find((x) => x.env === a.env && String(x.memberId) === String(a.memberId));
+    if (here) idMap[a.id] = here.id;
+    else if (r.accountProfiles?.[a.id]) missing.push(a.nickname);
+  }
+  const accountProfiles = { ...s.accountProfiles };
+  for (const [id, secs] of Object.entries(r.accountProfiles || {})) if (idMap[id]) accountProfiles[idMap[id]] = secs;
+  const key = (h) => `${h.at}|${h.action || ''}|${h.listingId || ''}`;
+  const seen = new Set();
+  const history = [...(r.history || []), ...s.history]
+    .filter((h) => h && !seen.has(key(h)) && seen.add(key(h)))
+    .sort((a, b2) => String(b2.at).localeCompare(String(a.at)))
+    .slice(0, 3000);
+  const keyFor = (env) => (s.consumer[env].key ? s.consumer[env] : { key: r.consumer?.[env]?.key || '', secret: '' });
+  save(
+    deepMerge(DEFAULTS, {
+      ...r,
+      consumer: { production: keyFor('production'), sandbox: keyFor('sandbox') },
+      accounts: s.accounts,
+      defaultAccountId: idMap[r.defaultAccountId] || s.defaultAccountId,
+      accountProfiles,
+      history,
+      relistArchive: { ...r.relistArchive, ...s.relistArchive },
+      trace: s.trace,
+      openai: s.openai,
+      discord: { ...s.discord, events: r.discord?.events || s.discord.events },
+    }),
+  );
+  return { missing };
+}
+
+module.exports = { load, publicSettings, updateSettings, consumer, traceToken, traceLogin, addAccount, removeAccount, getAccount, addHistory, setArchived, isArchived, discordConfig, discordSeen, openaiKey, clearHistory, backup, restore };

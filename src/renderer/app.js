@@ -11,12 +11,12 @@ let S; // public settings
 let current = 'new';
 
 /* ---------- helpers ---------- */
-function toast(msg) {
+function toast(msg, ms = 2200) {
   const t = $('#toast');
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(t._h);
-  t._h = setTimeout(() => t.classList.remove('show'), 2200);
+  t._h = setTimeout(() => t.classList.remove("show"), ms);
 }
 let modalOnClose = null;
 function modal(html) {
@@ -1308,21 +1308,69 @@ function renderImages() {
   const drop = $('#drop');
   drop.addEventListener('click', () => $('#file').click());
   // Drag files in, or drag tiles to reorder.
-  box.ondragover = (e) => (e.preventDefault(), drop.classList.add('over'));
+  box.ondragover = (e) => {
+    e.preventDefault();
+    if (!DRAG) drop.classList.add('over');
+  };
   box.ondragleave = () => drop.classList.remove('over');
   box.ondrop = (e) => {
     e.preventDefault();
     drop.classList.remove('over');
-    if (e.dataTransfer.files.length) return addFiles(e.dataTransfer.files);
-    const from = +e.dataTransfer.getData('text/plain');
-    const to = +e.target.closest('[data-id]')?.dataset.id;
-    if (!from || !to || from === to) return;
-    const a = F.images.findIndex((i) => i.id === from);
-    const [moved] = F.images.splice(a, 1);
-    F.images.splice(F.images.findIndex((i) => i.id === to), 0, moved);
-    renderImages();
+    if (!DRAG && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
   };
-  $$('[data-id]', box).forEach((t) => t.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/plain', t.dataset.id)));
+  sortable(box, '[data-id]', (from, to, after) => {
+    const idx = (el) => F.images.findIndex((i) => i.id === +el.dataset.id);
+    moveItem(F.images, idx(from), idx(to), after);
+    renderImages();
+  });
+}
+
+// Drag photo tiles to reorder them. The tile being dragged is tracked here rather than in the drag
+// data, so it's never mistaken for a photo file dropped in from outside (which adds a new photo).
+let DRAG = null;
+function sortable(box, sel, onMove) {
+  const clear = () => $$('.drop-before, .drop-after', box).forEach((x) => x.classList.remove('drop-before', 'drop-after'));
+  const isAfter = (t, e) => {
+    const r = t.getBoundingClientRect();
+    return e.clientX > r.left + r.width / 2;
+  };
+  $$(sel, box).forEach((t) => {
+    t.draggable = true;
+    $$('img', t).forEach((i) => (i.draggable = false));
+    t.addEventListener('dragstart', (e) => {
+      DRAG = { box, el: t };
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', '');
+      requestAnimationFrame(() => t.classList.add('dragging'));
+    });
+    t.addEventListener('dragend', () => {
+      DRAG = null;
+      t.classList.remove('dragging');
+      clear();
+    });
+    t.addEventListener('dragover', (e) => {
+      if (DRAG?.box !== box) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      clear();
+      if (t !== DRAG.el) t.classList.add(isAfter(t, e) ? 'drop-after' : 'drop-before');
+    });
+    t.addEventListener('drop', (e) => {
+      if (DRAG?.box !== box) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const from = DRAG.el;
+      DRAG = null;
+      clear();
+      if (from !== t) onMove(from, t, isAfter(t, e));
+    });
+  });
+}
+// Moves arr[from] to just before (or after) what is at arr[to].
+function moveItem(arr, from, to, after) {
+  if (from < 0 || to < 0 || from === to) return;
+  const [m] = arr.splice(from, 1);
+  arr.splice(to - (from < to ? 1 : 0) + (after ? 1 : 0), 0, m);
 }
 
 /* Photo viewer */
@@ -1443,6 +1491,7 @@ async function makeAiPhoto() {
   const vars = aiVars(sec, { brand: brandName(), name: F.name, colour: F.colour, sku: F.sku });
   runAiPhoto(sec, p.src ?? choices[p.index].src, vars, {
     kind: 'new',
+    afterpay: !!F.payment.afterpay,
     label: [brandName(), F.name].filter(Boolean).join(' ') || 'New listing',
     // Auto-approve only drops it into the form it was made for; otherwise it waits for review.
     autoUse: (dataUrl) => {
@@ -1550,7 +1599,7 @@ const newJobId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
 const jobSnapshot = (j) => ({
   id: j.id, kind: j.kind, payload: j.payload, label: j.label, status: j.status, error: j.error, res: j.res, started: j.started,
   sec: j.sec && { id: j.sec.id, name: j.sec.name, aiRef: j.sec.aiRef, aiCategory: j.sec.aiCategory, category: j.sec.category },
-  productSrc: j.productSrc, vars: j.vars,
+  productSrc: j.productSrc, vars: j.vars, afterpay: j.afterpay,
 });
 const persistJob = (j) => api.aiJobSave(jobSnapshot(j)).catch(() => {});
 
@@ -1580,9 +1629,63 @@ function kindOpts(job) {
   };
 }
 
+// Afterpay logo (Settings → AI photos): drawn onto the finished AI photo, centred in the empty space
+// between the top of the photo and the top of the product. The product's top edge is the first row
+// (3 in a row, to ignore specks) that differs from that row's own background at the left/right edges.
+const loadImg = (src) =>
+  new Promise((res, rej) => {
+    const i = new Image();
+    i.onload = () => res(i);
+    i.onerror = () => rej(new Error("Couldn't load the image."));
+    i.src = src;
+  });
+const hasAfterpay = (methods) => [].concat(methods || []).some((m) => +m === 64);
+async function addAfterpayLogo(dataUrl) {
+  const [img, logo] = await Promise.all([loadImg(dataUrl), loadImg('afterpay-logo.png')]);
+  const W = img.naturalWidth;
+  const H = img.naturalHeight;
+  const c = document.createElement('canvas');
+  c.width = W;
+  c.height = H;
+  const ctx = c.getContext('2d');
+  ctx.drawImage(img, 0, 0);
+  const px = ctx.getImageData(0, 0, W, H).data;
+  const edge = Math.max(4, Math.round(W * 0.03));
+  const rowHit = (y) => {
+    let r = 0, g = 0, b = 0, n = 0;
+    for (const x0 of [0, W - edge])
+      for (let x = x0; x < x0 + edge; x++) {
+        const k = (y * W + x) * 4;
+        r += px[k], g += px[k + 1], b += px[k + 2], n++;
+      }
+    (r /= n), (g /= n), (b /= n);
+    let diff = 0, seen = 0;
+    for (let x = edge; x < W - edge; x += 2, seen++) {
+      const k = (y * W + x) * 4;
+      if (Math.abs(px[k] - r) + Math.abs(px[k + 1] - g) + Math.abs(px[k + 2] - b) > 60) diff++;
+    }
+    return diff > seen * 0.01;
+  };
+  let top = 0;
+  for (let y = Math.round(H * 0.01); y < H * 0.7; y++) {
+    if (rowHit(y) && rowHit(y + 1) && rowHit(y + 2)) {
+      top = y;
+      break;
+    }
+  }
+  if (!top) top = Math.round(H * 0.22); // couldn't find the product's edge: use the top fifth
+  const ratio = logo.naturalWidth / logo.naturalHeight;
+  let lh = Math.min(top * 0.5, H * 0.085);
+  if (lh * ratio > W * 0.42) lh = (W * 0.42) / ratio;
+  lh = Math.max(lh, H * 0.04);
+  const lw = lh * ratio;
+  ctx.drawImage(logo, (W - lw) / 2, Math.max(H * 0.015, (top - lh) / 2), lw, lh);
+  return /^data:image\/png/.test(dataUrl) ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', 0.92);
+}
+
 function runAiPhoto(sec, productSrc, vars, opts = {}) {
   const job = {
-    id: newJobId(), kind: opts.kind || 'new', payload: opts.payload || null, sec, productSrc, vars,
+    id: newJobId(), kind: opts.kind || 'new', payload: opts.payload || null, sec, productSrc, vars, afterpay: !!opts.afterpay,
     label: opts.label || vars.name || vars.product, status: 'running', started: Date.now(), bg: !!opts.background,
   };
   job.opts = { ...kindOpts(job), ...opts };
@@ -1597,7 +1700,14 @@ function generateJob(job) {
   const { opts } = job;
   return api
     .aiGenerate({ refFile: job.sec.aiRef, productDataUrl: job.productSrc, vars: job.vars })
-    .then((res) => {
+    .then(async (res) => {
+      if (job.afterpay && S.ai?.afterpayLogo) {
+        try {
+          res.dataUrl = await addAfterpayLogo(res.dataUrl);
+        } catch (err) {
+          console.warn('[afterpay logo]', err);
+        }
+      }
       job.status = 'done';
       job.res = res;
       api.getSettings().then((s) => (S = s)).catch(() => {}); // picks up the updated cost averages
@@ -2067,7 +2177,7 @@ async function confirmList() {
     const p = await pickAiSource(snap.photos, { go: 'Make AI photo & queue listing', onCancel: () => confirmList() });
     if (!p) return;
     const vars = aiVars(ai.sec, { brand: brandName(), name: F.name, colour: F.colour, sku: F.sku });
-    runAiPhoto(ai.sec, p.src ?? snap.photos[p.index], vars, { kind: 'queue', payload: snap, label: `Listing: ${listing.Title}`, background: true });
+    runAiPhoto(ai.sec, p.src ?? snap.photos[p.index], vars, { kind: 'queue', payload: snap, label: `Listing: ${listing.Title}`, background: true, afterpay: hasAfterpay(listing.PaymentMethods) });
     const keep = { accountId: F.accountId, category: F.category, attrs: F.attrs, catInfo: F.catInfo, type: F.type };
     F = { ...freshForm(F.profileId, F.accountId), ...keep };
     closeModal();
@@ -2109,6 +2219,37 @@ api.onProgress((m) => {
   if (p) p.textContent = m;
 });
 
+/* ---------- search boxes (Live, Relist, Sold) ---------- */
+// Every word must appear somewhere in the row's text (title, SKU, listing #, buyer…), any order.
+const searchHit = (q, ...fields) => {
+  const words = String(q || '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const hay = fields.filter((f) => f != null).join(' ').toLowerCase();
+  return words.every((w) => hay.includes(w));
+};
+const searchBox = (id, value, placeholder) =>
+  `<label class="search-box"><span>⌕</span><input id="${id}" type="search" placeholder="${esc(placeholder)}" value="${esc(value)}" spellcheck="false" /></label>`;
+// Filters as you type; the page re-renders, so focus and caret go back into the box.
+function bindSearch(id, set, render) {
+  const box = $('#' + id);
+  if (!box) return;
+  box.oninput = debounce((e) => {
+    set(e.target.value);
+    render();
+    const el = $('#' + id);
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, 200);
+  // Esc clears it.
+  box.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && box.value) {
+      box.value = '';
+      box.dispatchEvent(new Event('input'));
+    }
+  });
+}
+
 /* ---------- RELIST ---------- */
 const R = { days: 90, accountId: null, items: null, selected: new Set(), results: {}, loading: false, error: '', running: false };
 const ago = (iso) => {
@@ -2130,7 +2271,9 @@ function renderRelist() {
     .filter((x) => acc && x.env === acc.env && +x.memberId === +acc.memberId)
     .sort((a, b) => (b.archivedAt || '').localeCompare(a.archivedAt || ''));
   const arch = R.showArchived;
-  const items = arch ? archived : (R.items || []).filter((i) => !archive[i.listingId] && (!i.endDate || new Date(i.endDate) >= cutoff));
+  const items = (arch ? archived : (R.items || []).filter((i) => !archive[i.listingId] && (!i.endDate || new Date(i.endDate) >= cutoff))).filter((i) =>
+    searchHit(R.q, i.title, i.listingId, i.sku),
+  );
   const pending = arch ? items : items.filter((i) => !R.results[i.listingId]?.ok);
   const sel = pending.filter((i) => R.selected.has(i.listingId));
   view.innerHTML = `
@@ -2140,7 +2283,8 @@ function renderRelist() {
       <div class="seg" id="rlView"><button data-v="0" class="${arch ? '' : 'on'}">Unsold</button><button data-v="1" class="${arch ? 'on' : ''}">Archived (${archived.length})</button></div>
       <button class="btn" id="rlRefresh" ${R.loading || !R.accountId || arch ? 'disabled' : ''}>${R.loading ? 'Loading…' : 'Refresh'}</button>
       <span class="hint" style="margin:0">${arch ? `${items.length} archived · ${sel.length} selected` : R.items ? `${items.length} unsold · ${sel.length} selected` : ''}</span>
-      <select id="rlDays" style="width:auto;margin-left:auto" title="Trade Me only keeps unsold listings for 45 days" ${arch ? 'hidden' : ''}>
+      ${searchBox('rlQ', R.q || '', 'Search title or #')}
+      <select id="rlDays" style="width:auto" title="Trade Me only keeps unsold listings for 45 days" ${arch ? 'hidden' : ''}>
         ${[7, 14, 30, 60, 90].map((d) => `<option value="${d}" ${R.days === d ? 'selected' : ''}>Ended in last ${d} days</option>`).join('')}
       </select>
     </div>
@@ -2208,6 +2352,7 @@ function renderRelist() {
   $('#rlArch')?.addEventListener('click', () => setArchived(sel, true));
   $('#rlUnarch')?.addEventListener('click', () => setArchived(sel, false));
 
+  bindSearch('rlQ', (v) => (R.q = v), renderRelist);
   $('#rlAcc').onchange = (e) => {
     R.accountId = e.target.value;
     R.items = null;
@@ -2328,6 +2473,7 @@ async function loadLive() {
     LIVE.items = await api.live(ids);
     const stillLive = new Set(LIVE.items.map((i) => i.listingId));
     LIVE.selected = new Set([...LIVE.selected].filter((id) => stillLive.has(id)));
+    verifyLowest(LIVE.items).catch(() => {});
   } catch (err) {
     LIVE.error = err.message;
   }
@@ -2340,7 +2486,7 @@ function renderLive() {
   LIVE.scope = pickScope(LIVE.scope);
   const fromApp = new Set((S.history || []).filter((h) => !h.action || h.action === 'listed' || h.action === 'relisted').map((h) => +h.listingId));
   const q = LIVE.q.trim().toLowerCase();
-  const items = (LIVE.items || []).filter((i) => !q || `${i.title} ${i.sku} ${i.listingId}`.toLowerCase().includes(q));
+  const items = (LIVE.items || []).filter((i) => searchHit(q, i.title, i.sku, i.listingId, i.nickname));
   const showAcc = LIVE.scope === 'all' && accs.length > 1;
   const total = items.reduce((s, i) => s + (i.buyNow || i.maxBid || i.start) * (i.quantity || 1), 0);
   const sel = items.filter((i) => LIVE.selected.has(i.listingId));
@@ -2357,7 +2503,7 @@ function renderLive() {
         ${accs.map((a) => `<option value="${a.id}" ${a.id === LIVE.scope ? 'selected' : ''}>${esc(a.nickname)}</option>`).join('')}
       </select>
       <button class="btn" id="liveRefresh" ${LIVE.loading ? 'disabled' : ''}>${LIVE.loading ? 'Loading…' : 'Refresh'}</button>
-      <input id="liveQ" placeholder="Filter by title, SKU or #" value="${esc(LIVE.q)}" style="width:auto;min-width:220px;margin-left:auto" />
+      ${searchBox('liveQ', LIVE.q, 'Search title, SKU or #')}
     </div>
     ${
       LIVE.error
@@ -2407,13 +2553,7 @@ function renderLive() {
 
   $('#liveAcc').onchange = (e) => ((LIVE.scope = e.target.value), loadLive());
   $('#liveRefresh').onclick = () => loadLive();
-  $('#liveQ').oninput = debounce((e) => {
-    LIVE.q = e.target.value;
-    renderLive();
-    const el = $('#liveQ');
-    el.focus();
-    el.setSelectionRange(el.value.length, el.value.length);
-  }, 200);
+  bindSearch('liveQ', (v) => (LIVE.q = v), renderLive);
   $$('[data-url]').forEach((a) => (a.onclick = (e) => (e.preventDefault(), api.openExternal(a.dataset.url))));
   $$('[data-menu]').forEach((b) => (b.onclick = (e) => (e.stopPropagation(), liveMenu(b, LIVE.items.find((i) => i.listingId === +b.dataset.menu)))));
   $('#liveAll')?.addEventListener('change', (e) => {
@@ -2520,7 +2660,7 @@ function dropPrices(list) {
           ${r.i.picture ? `<img src="${esc(r.i.picture)}" alt=""/>` : '<span class="rl-noimg"></span>'}
           <span class="dp-title">${esc(r.i.title)}</span>
           <span class="dp-from">${dollars(r.from)}</span>
-          ${lowest(r.i) ? `<a href="#" class="dp-lowest ${lowest(r.i) < r.from ? 'under' : ''}" data-lm="${esc(LIVE.match[r.i.listingId].best.url)}" title="Cheapest exact match on Trade Me (click to open)">lowest ${dollars(lowest(r.i))}</a>` : '<span class="dp-lowest none">—</span>'}
+          ${lowest(r.i) ? `<a href="#" class="dp-lowest ${lowest(r.i) < r.from ? 'under' : ''} ${lmOld(LIVE.match[r.i.listingId]) ? 'lm-old' : ''}" data-lm="${esc(LIVE.match[r.i.listingId].best.url)}" title="Cheapest exact match on Trade Me, checked ${agoShort(LIVE.match[r.i.listingId].at)} ago (click to open)">lowest ${dollars(lowest(r.i))} <small>${agoShort(LIVE.match[r.i.listingId].at)}</small></a>` : '<span class="dp-lowest none">—</span>'}
           <label class="dp-to"><span>$</span><input type="number" min="0.5" step="0.01" data-to="${r.i.listingId}" value="${r.to >= 0.5 ? (Number.isInteger(r.to) ? r.to : r.to.toFixed(2)) : ''}" title="Type your own price for this listing" /></label>
           <span class="dp-pctchg"></span>
         </div>`,
@@ -2636,18 +2776,74 @@ function liveMenu(btn, item) {
 }
 
 // Lowest exact match for ticked live listings (same AI check as New listing), shown in the Lowest column.
-// listingId → { loading } | { best, count, checked, at } | { error }. Finished results are saved on
-// this computer so they're still there after closing Tagline (kept 30 days).
+// listingId → { loading } | { best, all, count, checked, at, gone } | { error }. `all` is every match,
+// cheapest first; when the cheapest sells or is withdrawn the next one takes over (verifyLowest).
+// Finished results are saved on this computer so they're still there after closing Tagline; they fade
+// after Settings → General "old after" days and are dropped after "forget after" days.
 const LM_KEY = 'tagline.lowestMatch';
 LIVE.match = (() => {
   try {
     const saved = JSON.parse(localStorage.getItem(LM_KEY) || '{}');
-    const cutoff = Date.now() - 30 * 86400000;
-    return Object.fromEntries(Object.entries(saved).filter(([, m]) => m && !m.loading && (m.at || 0) > cutoff));
+    return Object.fromEntries(Object.entries(saved).filter(([, m]) => m && !m.loading && !m.error).map(([k, m]) => [k, { ...m, all: m.all || (m.best ? [m.best] : []) }]));
   } catch {
     return {};
   }
 })();
+const lmDays = (k, d) => Math.max(1, +S?.general?.[k] || d);
+function pruneLiveMatch() {
+  const cutoff = Date.now() - lmDays('lowestKeepDays', 30) * 86400000;
+  for (const [k, m] of Object.entries(LIVE.match)) if (!m.loading && (m.at || 0) < cutoff) delete LIVE.match[k];
+  saveLiveMatch();
+}
+const lmOld = (m) => m?.at && Date.now() - m.at > lmDays('lowestOldDays', 3) * 86400000;
+const agoShort = (t) => {
+  const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
+  return mins < 60 ? `${mins}m` : mins < 1440 ? `${Math.round(mins / 60)}h` : `${Math.round(mins / 1440)}d`;
+};
+
+// Re-check that each listing's cheapest match is still for sale (and still that price). If it sold or
+// was withdrawn, drop it and move on to the next cheapest. No AI cost: just reads the listing.
+// Runs when Live loads, at most once every 30 minutes per listing.
+async function verifyLowest(items) {
+  const due = items.filter((i) => {
+    const m = LIVE.match[i.listingId];
+    return m?.best && !m.loading && !m.verifying && Date.now() - (m.verifiedAt || 0) > 30 * 60000;
+  });
+  let changed = false;
+  await runPool(due, 3, async (i) => {
+    const m = LIVE.match[i.listingId];
+    m.verifying = true;
+    try {
+      for (let n = 0; n < 8 && m.all.length; n++) {
+        const best = m.all[0];
+        const r = (await api.listingAlive({ accountId: i.accountId, ids: [best.id] }))[best.id];
+        if (!r || r.error) return; // couldn't tell (offline…); leave it for next time
+        if (!r.alive) {
+          m.all.shift();
+          m.gone = (m.gone || 0) + 1;
+          changed = true;
+          continue;
+        }
+        if (r.price && r.price !== best.price) {
+          best.price = r.price;
+          m.all.sort((a, b) => a.price - b.price);
+          changed = true;
+          if (m.all[0] !== best) continue; // its price went up: check the new cheapest
+        }
+        break;
+      }
+      m.best = m.all[0] || null;
+      m.count = m.all.length;
+      m.verifiedAt = Date.now();
+    } finally {
+      delete m.verifying;
+    }
+  });
+  if (changed) {
+    saveLiveMatch();
+    if (current === 'live' && !LIVE.running) renderLive();
+  }
+}
 const saveLiveMatch = () => {
   try {
     const done = Object.fromEntries(Object.entries(LIVE.match).filter(([, m]) => m && !m.loading && !m.error));
@@ -2663,11 +2859,15 @@ function liveMatchCell(i) {
   if (!m) return '<span class="rl-muted">—</span>';
   if (m.loading) return '<div class="spinner small" title="Finding lowest match…"></div>';
   if (m.error) return `<span class="lm-err" title="${esc(m.error)}">!</span>`;
-  if (!m.best) return `<span class="rl-muted" title="No exact match on Trade Me${m.filters ? ` (${esc(m.filters)})` : ''} · checked ${m.checked}">none</span>`;
+  const old = lmOld(m);
+  const age = `<small class="lm-age" title="Checked ${agoShort(m.at)} ago${old ? ' — tick it and run 🔎 Lowest again for a fresh price' : ''}">${agoShort(m.at)}</small>`;
+  if (!m.best && m.gone)
+    return `<span class="lm-cell ${old ? 'lm-old' : ''}"><span class="rl-muted" title="All ${m.gone} match${m.gone > 1 ? 'es have' : ' has'} sold or ended since the check. Run 🔎 Lowest again to look for new ones.">ended</span>${age}</span>`;
+  if (!m.best) return `<span class="lm-cell ${old ? 'lm-old' : ''}"><span class="rl-muted" title="No exact match on Trade Me${m.filters ? ` (${esc(m.filters)})` : ''} · checked ${m.checked}">none</span>${age}</span>`;
   const mine = i.buyNow || i.start || 0;
   const diff = Math.round((mine - m.best.price) * 100) / 100;
-  const tip = `${m.best.title}${m.best.size ? ` · ${m.best.size}` : ''}${m.best.afterpay ? ' · Afterpay' : ''} · ${diff > 0 ? `you're ${money(diff)} higher` : diff < 0 ? `you're ${money(-diff)} cheaper` : 'same price'}${m.count > 1 ? ` · ${m.count} matches` : ''}`;
-  return `<a href="#" class="lm-link ${diff > 0 ? 'lm-err' : 'lm-ok'}" data-lm="${esc(m.best.url)}" title="${esc(tip)}">${dollars(m.best.price)}</a>`;
+  const tip = `${m.best.title}${m.best.size ? ` · ${m.best.size}` : ''}${m.best.afterpay ? ' · Afterpay' : ''} · ${diff > 0 ? `you're ${money(diff)} higher` : diff < 0 ? `you're ${money(-diff)} cheaper` : 'same price'}${m.count > 1 ? ` · ${m.count} matches` : ''}${m.gone ? ` · ${m.gone} cheaper match${m.gone > 1 ? 'es' : ''} sold or ended since` : ''}`;
+  return `<span class="lm-cell ${old ? 'lm-old' : ''}"><a href="#" class="lm-link ${diff > 0 ? 'lm-err' : 'lm-ok'}" data-lm="${esc(m.best.url)}" title="${esc(tip)}">${dollars(m.best.price)}</a>${age}</span>`;
 }
 function liveMatchStart(list) {
   if (!S.openai?.hasKey) return toast('Add your OpenAI API key in Settings → AI photos first.');
@@ -2712,7 +2912,8 @@ async function liveMatchOne(i) {
     .filter((c) => LM.afterpay === 'any' || (LM.afterpay === 'only' ? c.afterpay : !c.afterpay))
     .sort((a, b) => a.price - b.price);
   const filters = [LM.sameSize && size && `size ${size}`, LM.afterpay === 'only' && 'with Afterpay', LM.afterpay === 'none' && 'without Afterpay'].filter(Boolean).join(', ');
-  return { best: list[0] || null, count: list.length, checked: cands.length, filters };
+  const all = list.slice(0, 15).map(({ id, title, price, url, size, afterpay }) => ({ id, title, price, url, size, afterpay }));
+  return { best: all[0] || null, all, count: list.length, checked: cands.length, filters, verifiedAt: Date.now() };
 }
 
 // The section (with a reference photo) whose category matches a listing's category number, else the
@@ -2737,7 +2938,7 @@ function bulkAiPhotos(list) {
   })();
   modal(`
     <h3>AI hero photos</h3>
-    <p class="hint" style="margin-top:-6px">${list.length} listing${list.length > 1 ? 's' : ''} selected · about US$${(per * list.length).toFixed(2)} (≈ NZ$${(per * list.length * 1.7).toFixed(2)})</p>
+    <p class="hint" style="margin-top:-6px">${list.length} listing${list.length > 1 ? 's' : ''} selected · about US$${(per * list.length).toFixed(2)} (≈ NZ$${nzd(per * list.length).toFixed(2)})</p>
     <label class="f">Reference photo
       <select id="baSec">
         <option value="">Match each listing's category (else first section with a photo)</option>
@@ -2790,6 +2991,7 @@ async function bulkAiOne(item, secId) {
     label: L.Title,
     background: true,
     quiet: true,
+    afterpay: hasAfterpay(L.PaymentMethods),
   });
 }
 
@@ -2840,15 +3042,12 @@ async function editLivePhotos(item, { ai = false } = {}) {
     box.ondragover = (e) => e.preventDefault();
     box.ondrop = (e) => {
       e.preventDefault();
-      if (e.dataTransfer.files.length) return addFiles(e.dataTransfer.files);
-      const from = +e.dataTransfer.getData('text/plain');
-      const to = +e.target.closest('[data-i]')?.dataset.i;
-      if (Number.isNaN(from) || Number.isNaN(to) || from === to) return;
-      const [moved] = st.photos.splice(from, 1);
-      st.photos.splice(to, 0, moved);
-      render();
+      if (!DRAG && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
     };
-    $$('#lpImgs [data-i]').forEach((t) => t.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/plain', t.dataset.i)));
+    sortable(box, '[data-i]', (from, to, after) => {
+      moveItem(st.photos, +from.dataset.i, +to.dataset.i, after);
+      render();
+    });
     $('#lpSec').onchange = (e) => (st.secId = e.target.value);
     $('#lpAi').onclick = makeAi;
     $('#cancel').onclick = closeModal;
@@ -2893,6 +3092,7 @@ async function editLivePhotos(item, { ai = false } = {}) {
       kind: 'live',
       payload: { accountId: item.accountId, listingId: item.listingId },
       label: L.Title,
+      afterpay: hasAfterpay(L.PaymentMethods),
       onBack: render,
       // Using it puts it first in this Edit photos window (reopened if you'd closed it), to save with
       // your other changes. After a restart it saves straight to the listing instead.
@@ -3081,6 +3281,7 @@ function renderSold() {
   const courier = +S.courierCost || 0;
   const items = (SOLD.items || [])
     .filter((i) => !i.soldDate || new Date(i.soldDate) >= cutoff)
+    .filter((i) => searchHit(SOLD.q, i.title, i.buyer, i.listingId, i.purchaseId, i.nickname, ...(i.parcels || []).map((p) => p.ref)))
     .map((i) => {
       const post = i.pickup ? 0 : courier;
       return { ...i, courier: post, payout: Math.round((i.payout - post) * 100) / 100 };
@@ -3104,8 +3305,10 @@ function renderSold() {
         ${accs.map((a) => `<option value="${a.id}" ${a.id === SOLD.scope ? 'selected' : ''}>${esc(a.nickname)}</option>`).join('')}
       </select>
       <button class="btn" id="soldRefresh" ${SOLD.loading ? 'disabled' : ''}>${SOLD.loading ? 'Loading…' : 'Refresh'}</button>
+      <button class="btn" id="soldCourier" title="Open Trade Me's Book a courier page">📦 Book a courier</button>
       ${single ? `<div class="seg" id="soldMode"><button data-m="list" class="${mode === 'list' ? 'on' : ''}">Sales list</button><button data-m="page" class="${mode === 'page' ? 'on' : ''}">Trade Me page</button></div>` : ''}
-      <div class="seg ${mode === 'page' ? 'hidden' : ''}" id="soldDays" style="margin-left:auto">
+      ${mode === 'page' ? '' : searchBox('soldQ', SOLD.q || '', 'Search title, buyer or #')}
+      <div class="seg ${mode === 'page' ? 'hidden' : ''}" id="soldDays" style="${mode === 'page' ? 'margin-left:auto' : ''}">
         ${[7, 14, 30, 45].map((d) => `<button data-d="${d}" class="${SOLD.days === d ? 'on' : ''}">${d} days</button>`).join('')}
       </div>
     </div>
@@ -3171,6 +3374,8 @@ function renderSold() {
   const saleBy = (pid) => (SOLD.items || []).find((i) => String(i.purchaseId) === pid);
   $$('[data-courier]').forEach((b) => (b.onclick = () => bookCourier(saleBy(b.dataset.courier))));
   $$('[data-track]').forEach((b) => (b.onclick = () => showTracking(saleBy(b.dataset.track))));
+  bindSearch('soldQ', (v) => (SOLD.q = v), renderSold);
+  $('#soldCourier').onclick = () => bookCourierGeneral(SOLD.scope);
   $('#soldAcc').onchange = (e) => {
     SOLD.scope = e.target.value;
     loadSold();
@@ -3328,6 +3533,19 @@ function renderQuestions() {
 function bookCourier(sale) {
   if (!sale) return;
   api.openCourier({ accountId: sale.accountId, purchaseId: sale.purchaseId, listingId: sale.listingId, title: sale.title }).catch((e) => toast(e.message));
+}
+// Trade Me's general Book a courier page, signed in as one account (asks which when showing all).
+function bookCourierGeneral(scope) {
+  const accs = envAccounts();
+  const open = (id) => api.openCourier({ accountId: id }).catch((e) => toast(e.message));
+  if (scope && scope !== 'all') return open(scope);
+  if (accs.length === 1) return open(accs[0].id);
+  modal(`<h3>Book a courier</h3>
+    <p class="hint" style="margin-top:-6px">Which account is sending it?</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 4px">${accs.map((a) => `<button class="btn ${a.id === S.defaultAccountId ? 'primary' : ''}" data-acc="${esc(a.id)}">${esc(a.nickname)}</button>`).join('')}</div>
+    <div class="actions"><button class="btn ghost" id="cancel">Cancel</button></div>`);
+  $('#cancel').onclick = closeModal;
+  $$('[data-acc]').forEach((b) => (b.onclick = () => (closeModal(), open(b.dataset.acc))));
 }
 api.onCourierClosed(() => {
   // Trade Me can take a moment to attach the tracking number; check now and again shortly.
@@ -3625,11 +3843,18 @@ const flush = debounce(async () => {
   }
 }, 400);
 
+const SET_TABS = [['trademe', 'Trade Me'], ['ai', 'AI'], ['integrations', 'Integrations'], ['general', 'General']];
+const SET_CARDS = { trademe: ['Accounts', 'Trade Me API'], ai: ['Total AI spend', 'AI photos'], integrations: ['Product lookup', 'Discord'], general: ['Your costs', 'Startup', 'Desktop notifications', 'Lowest match', 'Backup', 'Updates'] };
+const G_DEFAULTS = { startTab: 'new', startOnLogin: false, checkUpdates: true, notify: { sales: true, questions: true }, pollMins: 3, usdNzd: 1.7, lowestOldDays: 3, lowestKeepDays: 30 };
+const G = () => ({ ...G_DEFAULTS, ...(S?.general || {}) });
+const nzd = (usd) => usd * (+G().usdNzd || 1.7);
+let SET_TAB = 'trademe';
 function renderSettings() {
   const c = S.consumer[S.env];
   view.innerHTML = `
   <div class="settings">
     <h1>Settings</h1>
+    <div class="tabs" id="setTabs">${SET_TABS.map(([k, l]) => `<button data-t="${k}" class="${k === SET_TAB ? 'on' : ''}">${l}</button>`).join('')}</div>
 
     <div class="card">
       <h2>Accounts</h2>
@@ -3671,6 +3896,52 @@ function renderSettings() {
         <label class="f" style="max-width:260px">Courier cost per parcel ($) <input id="courierCost" type="number" min="0" step="0.01" value="${S.courierCost ?? ''}" placeholder="e.g. 5.23" /></label>
       </div>
       <p class="hint">What you pay to send a parcel. It comes off your payout on New listing and on Sold (not for pickups or cash).</p>
+      <div class="row" style="margin-top:12px">
+        <label class="f" style="max-width:260px">US$1 in NZ$ <input id="gRate" type="number" min="0.5" max="5" step="0.01" value="${G().usdNzd}" /></label>
+      </div>
+      <p class="hint">Exchange rate for showing AI costs (billed by OpenAI in US$) in NZ$.</p>
+    </div>
+
+    <div class="card">
+      <h2>Startup</h2>
+      <div class="row">
+        <label class="f" style="max-width:260px">Open Tagline on <select id="gStart">${[['new', 'New listing'], ['live', 'Live'], ['relist', 'Relist'], ['sold', 'Sold'], ['questions', 'Questions'], ['history', 'History']]
+          .map(([v, l]) => `<option value="${v}" ${G().startTab === v ? 'selected' : ''}>${l}</option>`)
+          .join('')}</select></label>
+      </div>
+      <label class="ai-auto"><input type="checkbox" id="gLogin" ${G().startOnLogin ? 'checked' : ''} /> <span><b>Start Tagline when you log in to your computer</b><small>So sale and question alerts keep coming without you opening it. Only works in the installed app.</small></span></label>
+      <label class="ai-auto"><input type="checkbox" id="gUpd" ${G().checkUpdates ? 'checked' : ''} /> <span><b>Check for updates when Tagline opens</b><small>Tells you when a new version is out. Nothing installs until you click it under Updates.</small></span></label>
+    </div>
+
+    <div class="card">
+      <h2>Desktop notifications</h2>
+      <div class="chips" id="gNotify" style="margin:0 0 12px">
+        ${[['sales', 'New sales'], ['questions', 'New questions']].map(([k, l]) => `<button class="chip ${G().notify?.[k] ? 'on' : ''}" data-n="${k}">${l}</button>`).join('')}
+      </div>
+      <div class="row">
+        <label class="f" style="max-width:260px">Check every (minutes) <input id="gPoll" type="number" min="1" max="60" step="1" value="${G().pollMins}" /></label>
+      </div>
+      <p class="hint">A Windows / Mac notification while Tagline is open; click it to jump to Sold or Questions. The same check sends Discord messages. Ones from before you switched it on aren't shown.</p>
+    </div>
+
+    <div class="card">
+      <h2>Lowest match</h2>
+      <div class="row">
+        <label class="f">Fade results after (days) <input id="gLmOld" type="number" min="1" max="60" step="1" value="${G().lowestOldDays}" /></label>
+        <label class="f">Forget results after (days) <input id="gLmKeep" type="number" min="1" max="365" step="1" value="${G().lowestKeepDays}" /></label>
+      </div>
+      <p class="hint">🔎 Lowest results on Live show how long ago they were checked and fade once they're old, so you know to re-check before pricing off them. Whenever Live loads, Tagline also checks the cheapest match is still for sale: if it sold or was withdrawn, the next cheapest takes over (free, no AI).</p>
+    </div>
+
+    <div class="card">
+      <h2>Backup</h2>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn small" id="bkExport">Export backup…</button>
+        <button class="btn small" id="bkImport">Restore from backup…</button>
+        <button class="btn small" id="openData">Open data folder</button>
+        <button class="btn small danger" id="clearHist">Clear history</button>
+      </div>
+      <p class="hint" id="bkStatus">A backup has your sections, templates, AI reference photos, settings and history, for moving to another computer. It doesn't include API secrets, Trade Me logins, the Trace login, OpenAI key or Discord webhook: add those again after restoring.</p>
     </div>
 
     <div class="card">
@@ -3695,6 +3966,7 @@ function renderSettings() {
       </div>
       <div id="aiCost" class="ai-cost"></div>
       <label class="ai-auto"><input type="checkbox" id="aiAuto" ${S.ai?.autoApprove ? 'checked' : ''} /> <span><b>Auto-approve AI photos</b><small>Skip the review: on New listing the photo goes straight in as the main photo; on Live it's saved to the listing on Trade Me as soon as it's ready.</small></span></label>
+      <label class="ai-auto"><input type="checkbox" id="aiAfterpay" ${S.ai?.afterpayLogo ? 'checked' : ''} /> <span><b>Add the Afterpay logo when the listing has Afterpay</b><small>Placed in the space above the product, centred. Added after the AI makes the photo, so the logo is always exact.</small></span></label>
       <label class="f" style="margin-top:4px"><span>Prompt <a href="#" id="aiReset" style="float:right;font-weight:400">Reset to default</a></span><textarea id="aiPrompt" rows="12" spellcheck="false"></textarea></label>
       <p class="hint">Image 1 is the section's reference photo (Defaults → section → AI photo), Image 2 is the listing's product photo. Placeholders: <code>{product}</code> (brand + name) <code>{brand}</code> <code>{name}</code> <code>{colour}</code> <code>{sku}</code> <code>{category}</code> (the section's item word, e.g. "trading card box") <code>{section}</code></p>
     </div>
@@ -3728,6 +4000,18 @@ function renderSettings() {
     </div>
   </div>`;
 
+  // Tabs: each card belongs to the tab whose list has its heading.
+  const showTab = () => {
+    $$('#setTabs button').forEach((b) => b.classList.toggle('on', b.dataset.t === SET_TAB));
+    $$('.settings > .card').forEach((card) => {
+      const h = card.querySelector('h2')?.textContent.trim() || '';
+      const tab = Object.keys(SET_CARDS).find((k) => SET_CARDS[k].some((x) => h.startsWith(x))) || 'general';
+      card.classList.toggle('hidden', tab !== SET_TAB);
+    });
+  };
+  $$('#setTabs button').forEach((b) => (b.onclick = () => ((SET_TAB = b.dataset.t), showTab())));
+  showTab();
+
   // Running total of what AI features have cost, worked out from OpenAI's token counts on each call.
   const renderSpend = () => {
     const photos = Object.values(S.aiUsage || {}).reduce((a, u) => ({ n: a.n + (u.n || 0), usd: a.usd + (u.usd || 0) }), { n: 0, usd: 0 });
@@ -3737,7 +4021,7 @@ function renderSettings() {
     if (!box) return;
     box.innerHTML = `
       <div class="ai-cost-row">
-        <div class="on"><span>Total</span><b>US$${total.toFixed(2)}</b><small>≈ NZ$${(total * 1.7).toFixed(2)}</small></div>
+        <div class="on"><span>Total</span><b>US$${total.toFixed(2)}</b><small>≈ NZ$${nzd(total).toFixed(2)}</small></div>
         <div><span>AI photos</span><b>US$${photos.usd.toFixed(2)}</b><small>${photos.n} photo${photos.n === 1 ? '' : 's'}</small></div>
         <div><span>Lowest-match checks</span><b>US$${matches.usd.toFixed(2)}</b><small>${matches.n} check${matches.n === 1 ? '' : 's'}</small></div>
       </div>
@@ -3757,6 +4041,61 @@ function renderSettings() {
     const v = e.target.value === '' ? 0 : Math.max(0, Math.round(+e.target.value * 100) / 100);
     S = await api.updateSettings({ courierCost: v });
   }, 400);
+
+  // General tab
+  const setG = async (patch) => (S = await api.updateSettings({ general: patch }));
+  const numG = (id, key, min, max, dp = 0) =>
+    ($(id).oninput = debounce((e) => {
+      const v = +e.target.value;
+      if (e.target.value !== '' && v >= min && v <= max) setG({ [key]: dp ? Math.round(v * 10 ** dp) / 10 ** dp : Math.round(v) });
+    }, 400));
+  numG('#gRate', 'usdNzd', 0.5, 5, 2);
+  numG('#gPoll', 'pollMins', 1, 60);
+  numG('#gLmOld', 'lowestOldDays', 1, 60);
+  numG('#gLmKeep', 'lowestKeepDays', 1, 365);
+  $('#gStart').onchange = (e) => setG({ startTab: e.target.value });
+  $('#gLogin').onchange = (e) => setG({ startOnLogin: e.target.checked });
+  $('#gUpd').onchange = (e) => setG({ checkUpdates: e.target.checked });
+  $$('#gNotify [data-n]').forEach(
+    (b) =>
+      (b.onclick = () => {
+        b.classList.toggle('on');
+        setG({ notify: { [b.dataset.n]: b.classList.contains('on') } });
+      }),
+  );
+  const bk = (text, color = '') => {
+    $('#bkStatus').textContent = text;
+    $('#bkStatus').style.color = color;
+  };
+  $('#bkExport').onclick = async () => {
+    try {
+      const file = await api.backupExport();
+      if (file) bk(`Saved to ${file}`, 'var(--green)');
+    } catch (err) {
+      bk(err.message, 'var(--red)');
+    }
+  };
+  $('#bkImport').onclick = async () => {
+    if (!confirm("Restore from a backup?\n\nYour sections, templates and settings are replaced with the backup's, and its history is added to yours. API keys, logins and accounts on this computer are kept.")) return;
+    try {
+      const r = await api.backupImport();
+      if (!r) return;
+      S = r.settings;
+      renderSettings();
+      toast('Backup restored');
+      if (r.missing?.length) bk(`Restored. Sections for ${r.missing.join(', ')} weren't restored because ${r.missing.length > 1 ? "those accounts aren't" : "that account isn't"} logged in here: log in under Trade Me → Accounts, then restore again.`, 'var(--red)');
+    } catch (err) {
+      bk(err.message, 'var(--red)');
+    }
+  };
+  $('#openData').onclick = () => api.openDataFolder();
+  $('#clearHist').onclick = async () => {
+    const n = (S.history || []).length;
+    if (!n) return toast('History is already empty');
+    if (!confirm(`Delete all ${n} History entries? This can't be undone (export a backup first if you might want them).`)) return;
+    S = await api.clearHistory();
+    toast('History cleared');
+  };
   const oaStatus = (text, color = '') => {
     const st = $('#oaStatus');
     st.textContent = text;
@@ -3784,12 +4123,13 @@ function renderSettings() {
       const avg = u?.n ? u.usd / u.n : null;
       const v = avg ?? AI_EST[q];
       const on = q === $('#aiQuality').value;
-      return `<div class="${on ? 'on' : ''}"><span>${label}</span><b>US$${v.toFixed(2)}</b><small>≈ NZ$${(v * 1.7).toFixed(2)} · ${avg != null ? `your average of ${u.n}` : 'estimate'}</small></div>`;
+      return `<div class="${on ? 'on' : ''}"><span>${label}</span><b>US$${v.toFixed(2)}</b><small>≈ NZ$${nzd(v).toFixed(2)} · ${avg != null ? `your average of ${u.n}` : 'estimate'}</small></div>`;
     });
     $('#aiCost').innerHTML = `<p class="hint" style="margin:0 0 6px">Approx. cost per photo with ${model.endsWith('flare') ? 'Flare' : 'Sunburst'} (both bill at the same token rates; Flare is faster, not cheaper):</p><div class="ai-cost-row">${rows.join('')}</div>`;
   };
   renderAiCost();
   $('#aiAuto').onchange = async (e) => (S = await api.updateSettings({ ai: { autoApprove: e.target.checked } }));
+  $('#aiAfterpay').onchange = async (e) => (S = await api.updateSettings({ ai: { afterpayLogo: e.target.checked } }));
   $('#aiModel').onchange = async (e) => ((S = await api.updateSettings({ ai: { model: e.target.value } })), renderAiCost());
   $('#aiQuality').onchange = async (e) => ((S = await api.updateSettings({ ai: { quality: e.target.value } })), renderAiCost());
   api.aiDefaults().then((d) => {
@@ -4398,6 +4738,17 @@ $('#modal').addEventListener('click', (e) => e.target.id === 'modal' && !$('#go:
 
 (async () => {
   S = await api.getSettings();
-  go(S.accounts.some((a) => a.env === S.env) ? 'new' : 'settings');
+  pruneLiveMatch();
+  go(S.accounts.some((a) => a.env === S.env) ? G().startTab || 'new' : 'settings');
   restoreAiJobs(); // AI photos (and queued listings) waiting from last time
+  api.onGoto((v) => go(v)); // clicked a desktop notification
+  if (G().checkUpdates)
+    setTimeout(
+      () =>
+        api
+          .checkUpdate()
+          .then((r) => r?.available && toast(`Tagline ${r.latest} is out — Settings → General → Updates`, 8000))
+          .catch(() => {}),
+      4000,
+    );
 })();

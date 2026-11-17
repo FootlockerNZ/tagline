@@ -88,16 +88,20 @@ async function test(url) {
   return true;
 }
 
-// Background check for new sales and questions on every account (production only).
-// The first run after setting a webhook only records what's there, so old ones aren't posted.
-async function poll({ tm, accounts }) {
+// Background check for new sales and questions on every account (production only), for Discord and
+// desktop notifications. The first run after setting a webhook only records what's there, so old
+// ones aren't posted. notify(fresh) gets the new ones for desktop notifications.
+async function poll({ tm, accounts, notify }) {
   const d = store.discordConfig();
-  if (!isWebhook(d.url) || (!d.events.sales && !d.events.questions)) return;
+  const g = store.load().general?.notify || {};
+  const hook = isWebhook(d.url);
+  const want = { sales: (hook && d.events.sales) || g.sales, questions: (hook && d.events.questions) || g.questions };
+  if (!want.sales && !want.questions) return;
   const seen = { sales: new Set(d.seen.sales), questions: new Set(d.seen.questions) };
   const fresh = [];
   for (const acc of accounts) {
     if (acc.env === 'sandbox') continue;
-    if (d.events.sales) {
+    if (want.sales) {
       const r = await tm.api(acc, 'GET', '/v1/MyTradeMe/SoldItems/Last45Days.json?rows=200&photo_size=List').catch(() => null);
       for (const i of r?.List || []) {
         const key = String(i.PurchaseId || `${i.ListingId}-${i.SoldDate}`);
@@ -117,7 +121,7 @@ async function poll({ tm, accounts }) {
         }]);
       }
     }
-    if (d.events.questions) {
+    if (want.questions) {
       const r = await tm.api(acc, 'GET', '/v1/Listings/Questions/UnansweredQuestions.json').catch(() => null);
       for (const q of r?.List || []) {
         const key = String(q.ListingQuestionId);
@@ -134,7 +138,10 @@ async function poll({ tm, accounts }) {
       }
     }
   }
-  if (d.primed) for (const [kind, p] of fresh) send(kind, p);
+  if (d.primed) {
+    for (const [kind, p] of fresh) send(kind, p); // send() skips kinds switched off for Discord
+    notify?.(fresh.filter(([kind]) => g[kind]));
+  }
   store.discordSeen({ sales: [...seen.sales], questions: [...seen.questions] }, true);
 }
 

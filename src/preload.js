@@ -58,4 +58,10 @@ contextBridge.exposeInMainWorld('api', {
   relistRun: (payload) => call('relist:run', payload),
   relistArchive: (payload) => call('relist:archive', payload),
   onRelistProgress: (fn) => ipcRenderer.on('relist-progress', (_e, p) => fn(p)),
+  listingAlive: (payload) => call('listing:alive', payload),
+  backupExport: () => call('backup:export'),
+  backupImport: () => call('backup:import'),
+  openDataFolder: () => call('app:openData'),
+  clearHistory: () => call('history:clear'),
+  onGoto: (fn) => ipcRenderer.on('goto', (_e, view) => fn(view)),
 });

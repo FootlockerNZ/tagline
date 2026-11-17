@@ -1,4 +1,5 @@
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, Notification } = require('electron');
+const fs = require('fs');
 const path = require('path');
 // Keep settings/accounts in the same folder whether run from source or installed,
 // so switching to the installed app keeps your accounts.
@@ -113,7 +114,12 @@ handle('update:install', () => setImmediate(() => getUpdater().quitAndInstall())
 handle('app:version', () => app.getVersion());
 
 handle('settings:get', () => store.publicSettings());
-handle('settings:update', (patch) => (store.updateSettings(patch), store.publicSettings()));
+handle('settings:update', (patch) => {
+  store.updateSettings(patch);
+  if (patch.general?.startOnLogin !== undefined) applyLoginItem();
+  if (patch.general?.pollMins !== undefined || patch.general?.notify) schedulePoll(5000);
+  return store.publicSettings();
+});
 
 handle('account:login', async (env) => {
   const r = await tm.login(env, win);
@@ -711,7 +717,10 @@ handle('openai:test', async () => {
 // (same saved login as the embedded Trade Me pages). You choose and confirm the booking there.
 const courierWins = new Map();
 handle('courier:open', ({ accountId, purchaseId, listingId, title }) => {
-  if (!/^\d+$/.test(String(purchaseId))) throw new Error('This sale has no purchase id.');
+  // No purchase: Trade Me's general Book a courier wizard (pick the sale, or send anything).
+  const general = purchaseId == null;
+  if (!general && !/^\d+$/.test(String(purchaseId))) throw new Error('This sale has no purchase id.');
+  if (general) purchaseId = `general-${accountId}`;
   const open = courierWins.get(purchaseId);
   if (open && !open.isDestroyed()) return open.focus(), true;
   const a = store.load().accounts.find((x) => x.id === accountId);
@@ -720,7 +729,7 @@ handle('courier:open', ({ accountId, purchaseId, listingId, title }) => {
     width: 1100,
     height: 880,
     parent: win,
-    title: `Book a courier · ${title || '#' + listingId}`,
+    title: general ? `Book a courier · ${a?.nickname || ''}` : `Book a courier · ${title || '#' + listingId}`,
     autoHideMenuBar: true,
     webPreferences: { partition, contextIsolation: true, sandbox: true },
   });
@@ -737,7 +746,7 @@ handle('courier:open', ({ accountId, purchaseId, listingId, title }) => {
     courierWins.delete(purchaseId);
     win?.webContents.send('courier-closed', { purchaseId });
   });
-  w.loadURL(`https://www.trademe.co.nz/a/marketplace/purchase/${purchaseId}/book-courier/wizard/start?isRebooking=false`);
+  w.loadURL(general ? 'https://www.trademe.co.nz/a/marketplace/book-courier/wizard/start' : `https://www.trademe.co.nz/a/marketplace/purchase/${purchaseId}/book-courier/wizard/start?isRebooking=false`);
   return true;
 });
 
@@ -784,7 +793,7 @@ const pollDiscord = async () => {
   polling = true;
   try {
     const accounts = store.load().accounts.map((a) => store.getAccount(a.id)).filter(Boolean);
-    await discord.poll({ tm, accounts });
+    await discord.poll({ tm, accounts, notify: desktopNotify });
   } catch (e) {
     console.warn('[discord poll]', e.message);
   }
@@ -792,9 +801,111 @@ const pollDiscord = async () => {
 };
 handle('discord:poll', () => pollDiscord());
 
+// Desktop notifications for new sales and questions. More than 3 of a kind at once become one summary.
+// Clicking one opens Tagline on Sold or Questions.
+const shown = new Set(); // keeps notifications alive so their click handlers still fire
+function desktopNotify(fresh) {
+  if (!fresh.length || !Notification.isSupported()) return;
+  for (const kind of ['sales', 'questions']) {
+    const list = fresh.filter(([k]) => k === kind).map(([, p]) => p);
+    if (!list.length) continue;
+    const one = list.length === 1 ? list[0] : null;
+    const word = kind === 'sales' ? 'sale' : 'question';
+    const body = one
+      ? kind === 'sales'
+        ? [...one.fields.map((f) => f.value).filter(Boolean), one.account].join(' · ')
+        : `${one.description || ''}${one.fields?.[0]?.value ? `\n— ${one.fields[0].value}` : ''}`
+      : list.slice(0, 3).map((p) => p.title).join('\n') + (list.length > 3 ? `\n+${list.length - 3} more` : '');
+    const n = new Notification({ title: one ? one.title : `${list.length} new ${word}s`, body: String(body).slice(0, 250) });
+    shown.add(n);
+    n.on('click', () => {
+      shown.delete(n);
+      if (!win) return;
+      if (win.isMinimized()) win.restore();
+      win.show();
+      win.focus();
+      win.webContents.send('goto', kind === 'sales' ? 'sold' : 'questions');
+    });
+    n.on('close', () => shown.delete(n));
+    n.show();
+  }
+}
+
+// Sales/questions check: every N minutes (Settings → General), re-read each time so changes apply.
+let pollTimer = null;
+const schedulePoll = (delay) => {
+  clearTimeout(pollTimer);
+  const mins = Math.min(60, Math.max(1, +store.load().general?.pollMins || 3));
+  pollTimer = setTimeout(async () => {
+    await pollDiscord();
+    schedulePoll();
+  }, delay ?? mins * 60 * 1000);
+};
+
+// Start with the computer (installed app only; from source it would register Electron itself).
+const applyLoginItem = () => {
+  if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: !!store.load().general?.startOnLogin });
+};
+
+// Is a Trade Me listing still for sale, and at what Buy Now price? (for 🔎 Lowest fallbacks)
+handle('listing:alive', async ({ accountId, ids }) => {
+  const acc = account(accountId);
+  const out = {};
+  for (const id of ids || []) {
+    try {
+      const d = await tm.api(acc, 'GET', `/v1/Listings/${+id}.json`);
+      const end = tmDate(d.EndDate);
+      out[id] = { alive: !(end && new Date(end) < new Date()) && !d.IsClosed, price: d.BuyNowPrice || null };
+    } catch (e) {
+      // Withdrawn or gone: Trade Me says it can't be found. Anything else (offline…) = don't know.
+      out[id] = /\b(404|400)\b|not found|does not exist|no longer/i.test(e.message) ? { alive: false } : { error: e.message };
+    }
+  }
+  return out;
+});
+
+handle('backup:export', async () => {
+  const data = store.backup();
+  const secs = [...(data.settings.profiles || []), ...Object.values(data.settings.accountProfiles || {}).flat()];
+  data.aiRefs = {};
+  for (const f of new Set(secs.map((s) => s?.aiRef).filter(Boolean))) {
+    const u = aiphoto.refDataUrl(f);
+    if (u) data.aiRefs[f] = u;
+  }
+  const r = await dialog.showSaveDialog(win, {
+    title: 'Export Tagline backup',
+    defaultPath: path.join(app.getPath('documents'), `Tagline backup ${new Date().toISOString().slice(0, 10)}.json`),
+    filters: [{ name: 'Tagline backup', extensions: ['json'] }],
+  });
+  if (r.canceled || !r.filePath) return null;
+  fs.writeFileSync(r.filePath, JSON.stringify(data, null, 1));
+  return r.filePath;
+});
+handle('backup:import', async () => {
+  const r = await dialog.showOpenDialog(win, { title: 'Restore Tagline backup', properties: ['openFile'], filters: [{ name: 'Tagline backup', extensions: ['json'] }] });
+  if (r.canceled || !r.filePaths?.[0]) return null;
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(r.filePaths[0], 'utf8'));
+  } catch {
+    throw new Error("That file isn't a Tagline backup.");
+  }
+  const res = store.restore(data);
+  for (const [f, u] of Object.entries(data.aiRefs || {})) {
+    try {
+      aiphoto.writeRef(f, u);
+    } catch {}
+  }
+  applyLoginItem();
+  schedulePoll();
+  return { ...res, settings: store.publicSettings() };
+});
+handle('app:openData', () => shell.openPath(app.getPath('userData')));
+handle('history:clear', () => (store.clearHistory(), store.publicSettings()));
+
 app.whenReady().then(() => {
   createWindow();
-  setTimeout(pollDiscord, 15000);
-  setInterval(pollDiscord, 3 * 60 * 1000);
+  applyLoginItem();
+  schedulePoll(15000);
 });
 app.on('window-all-closed', () => app.quit());
