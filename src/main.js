@@ -40,6 +40,19 @@ function createWindow() {
     if (!/^https:\/\/([a-z0-9-]+\.)*trademe\.co\.nz\//i.test(params.src) || !String(params.partition).startsWith('persist:tm-')) e.preventDefault();
   });
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  // Closing while AI photos are still generating loses them (and their cost), so ask first.
+  win.on('close', (e) => {
+    if (!aiRunning) return;
+    const r = require('electron').dialog.showMessageBoxSync(win, {
+      type: 'warning',
+      buttons: ['Keep Tagline open', 'Close anyway'],
+      defaultId: 0,
+      cancelId: 0,
+      message: `${aiRunning} AI photo${aiRunning > 1 ? 's are' : ' is'} still being made.`,
+      detail: "Closing now stops them; they'll show as interrupted next time so you can try again. Finished photos waiting for review are kept.",
+    });
+    if (r === 0) e.preventDefault();
+  });
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https:\/\//.test(url)) shell.openExternal(url);
     return { action: 'deny' };
@@ -364,7 +377,7 @@ handle('price:comps', async ({ accountId, sku: rawSku, name, brand, isNew }) => 
     const nameMatch = tokens.length >= 2 && tokens.every((w) => t.includes(w));
     const otherCode = codes.length && !codes.includes(code);
     if (!(hasCode || (nameMatch && !otherCode))) continue;
-    comps.push({ id: i.ListingId, title, price: i.BuyNowPrice, url: tm.listingUrl(acc.env, i.ListingId), picture: i.PictureHref || '', exact: !!hasCode });
+    comps.push({ id: i.ListingId, title, price: i.BuyNowPrice, url: tm.listingUrl(acc.env, i.ListingId), picture: i.PictureHref || '', exact: !!hasCode, afterpay: !!i.HasAfterpay });
   }
   comps.sort((a, b) => b.exact - a.exact || a.price - b.price);
 
@@ -645,6 +658,13 @@ handle('ai:defaults', () => ({ prompt: aiphoto.DEFAULT_PROMPT, models: aiphoto.M
 handle('ai:saveRef', ({ key, dataUrl }) => aiphoto.saveRef(key, dataUrl));
 handle('ai:ref', (file) => aiphoto.refDataUrl(file));
 handle('ai:generate', (payload) => aiphoto.generate(payload));
+handle('price:match', (payload) => require('./match').findMatches(payload));
+handle('ai:jobs:save', (job) => aiphoto.saveJob(job));
+handle('ai:jobs:load', () => aiphoto.loadJobs());
+handle('ai:jobs:delete', (id) => aiphoto.deleteJob(id));
+// The renderer reports how many AI photos are still generating, so closing can warn first.
+let aiRunning = 0;
+handle('ai:running', (n) => (aiRunning = +n || 0));
 
 // Checks the saved OpenAI key works and can see the image model.
 const IMAGE_MODEL = 'gpt-image-2.6-sunburst';

@@ -576,7 +576,7 @@ function renderNew() {
     Object.assign(F, profileFields(prof(F.profileId)), { afterpayForcedOff: false });
     renderNew();
   });
-  $('#title').addEventListener('input', (e) => ((F.title = e.target.value), (F.titleDirty = true), counts()));
+  $('#title').addEventListener('input', (e) => ((F.title = e.target.value), (F.titleDirty = true), counts(), suggestSoon()));
   $('#desc').addEventListener('input', (e) => ((F.desc = e.target.value), (F.descDirty = true), counts()));
   $('#resetText').addEventListener('click', (e) => (e.preventDefault(), (F.titleDirty = F.descDirty = false), refreshText()));
   $('#sku').addEventListener('input', debounce((e) => (newQuery(e.target.value), lookup()), 450));
@@ -742,16 +742,19 @@ function payoutHtml(c) {
   if (!methods.length) return '';
   const shipOpt = SH().shipping.find((s) => s.method && s.price !== '');
   const ship = +shipOpt?.price || 0;
+  const courier = +S.courierCost || 0; // what you pay the courier per parcel (Settings)
   const tmFees = (c.successFee || 0) + (c.total || 0);
   const tiles = methods.map((k) => {
     const gross = k === 'cash' ? price : price + ship;
     const processing = PAY_FEES[k] ? Math.round(gross * PAY_FEES[k]) / 100 : 0;
-    const net = gross - processing - tmFees;
+    const post = k === 'cash' ? 0 : courier;
+    const net = gross - processing - tmFees - post;
     const lines = [
       [k === 'cash' ? 'Price' : 'Price + shipping', money(gross)],
       processing ? [`${PAY_LABELS[k]} ${PAY_FEES[k]}%`, '−' + money(processing)] : null,
       c.successFee ? ['Success fee', '−' + money(c.successFee)] : null,
       c.total ? ['Listing fees', '−' + money(c.total)] : null,
+      post ? ['Courier (you pay)', '−' + money(post)] : null,
     ].filter(Boolean);
     return `<div class="payout">
       <span class="payout-label">${PAY_LABELS[k]}</span>
@@ -899,17 +902,33 @@ function refreshText() {
 }
 
 /* suggested price from similar live listings */
+// Search words from a listing title: drops [bracketed] / (bracketed) tags, sizes (US10, 8W, EU 42,
+// 6Y), the SKU and separators, e.g. "Nike Dunk Low Panda - US10 [AfterPay Available]" → "Nike Dunk Low Panda".
+const compWords = (title, sku = F?.sku) =>
+  String(title || '')
+    .replace(/\[[^\]]*\]|\([^)]*\)/g, ' ')
+    .replace(/\b(?:US|UK|EU|CM)\s?\d{1,2}(?:\.\d)?(?:\s?\d\/\d)?\s?[WYC]?\b/gi, ' ')
+    .replace(/\b\d{1,2}(?:\.5)?[WYC]\b/gi, ' ')
+    .replace(new RegExp(String(sku || '').trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') || '(?!)', 'gi'), ' ')
+    .replace(/\s[-|·/]\s/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim() +
+  // Keep kids' sizing as a hint so kids' comps still count ("… (GS) 6Y" → "… GS").
+  (/\b(GS|PS|TD)\b|\b\d{1,2}(\.5)?\s?[YC]\b/i.test(String(title || '')) ? ' GS' : '');
 const suggestSoon = debounce(() => loadSuggest(), 600);
 async function loadSuggest() {
   if (!F || current !== 'new' || !F.accountId) return;
   const skuNow = String(F.sku || '').trim().toUpperCase();
-  const key = [F.accountId, skuNow, F.name, F.condition].join('|');
-  if (!skuNow && !F.name) return (F.suggest = null), renderSuggest();
+  // Similar listings are searched by your listing title (minus size, [AfterPay…] tags and the SKU),
+  // falling back to Model / name while the title is empty.
+  const words = compWords(F.title) || F.name;
+  const key = [F.accountId, skuNow, words, F.condition].join('|');
+  if (!skuNow && !words) return (F.suggest = null), renderSuggest();
   if (F.suggest?.key === key) return;
   F.suggest = { key, loading: true };
   renderSuggest();
   try {
-    const r = await api.priceComps({ accountId: F.accountId, sku: skuNow, name: F.name, brand: brandName(), isNew: F.condition === 'new' });
+    const r = await api.priceComps({ accountId: F.accountId, sku: skuNow, name: words, brand: brandName(), isNew: F.condition === 'new' });
     if (F?.suggest?.key !== key) return;
     F.suggest = { key, ...r };
   } catch (err) {
@@ -942,6 +961,7 @@ function renderSuggest() {
         <button class="btn small primary" data-use="${suggested}">Use $${suggested}</button>
       </div>
     </div>
+    ${matchHtml(s)}
     <details class="extras comps">
       <summary>Compared listings</summary>
       <div class="list">${s.comps
@@ -966,6 +986,75 @@ function renderSuggest() {
       }),
   );
   $$('.comp', box).forEach((a) => (a.onclick = (e) => (e.preventDefault(), api.openExternal(a.dataset.url))));
+  bindMatch(box, s);
+}
+
+/* lowest exact match (AI) */
+// The AI checks the similar listings (titles + photos) and keeps only true matches of this product;
+// the cheapest one is the price to beat. Options: same size only, and (when this listing offers
+// Afterpay) whether to compare against Afterpay listings only.
+const MATCH = { sameSize: true, afterpay: 'any' }; // afterpay: 'any' | 'only' | 'none'
+function matchHtml(s) {
+  const m = F.match?.key === s.key ? F.match : null;
+  const size = sizeText(F.size);
+  const opts = `
+    <div class="match-opts">
+      ${size ? `<label class="ai-auto" style="margin:0;padding:6px 10px"><input type="checkbox" id="mSize" ${MATCH.sameSize ? 'checked' : ''}/><span>Size ${esc(size)} only</span></label>` : ''}
+      ${F.payment.afterpay ? `<div class="seg" id="mAp">${[['any', 'Any listing'], ['only', 'With Afterpay'], ['none', 'Without Afterpay']].map(([v, l]) => `<button data-v="${v}" class="${MATCH.afterpay === v ? 'on' : ''}">${l}</button>`).join('')}</div>` : ''}
+      <button class="btn small" id="mGo" ${m?.loading ? 'disabled' : ''}>${m?.loading ? 'Checking with AI…' : m?.results ? '↻ Check again' : '🔎 Find lowest exact match'}</button>
+    </div>`;
+  if (!m || m.loading) return `<div class="match">${opts}${m?.loading ? '<p class="hint">Comparing titles and photos of ' + m.count + ' listings…</p>' : '<p class="hint" style="margin:6px 0 0">Uses AI (your OpenAI key, about 4c a check) to keep only listings that are exactly this product, then shows the cheapest.</p>'}</div>`;
+  if (m.error) return `<div class="match">${opts}<p class="hint" style="color:var(--red)">${esc(m.error)}</p></div>`;
+  const list = matchList(s, m);
+  const best = list[0];
+  const under = best ? Math.max(1, Math.round(best.price - 10)) : null;
+  return `<div class="match">${opts}
+    ${
+      best
+        ? `<div class="match-best">
+            ${best.picture ? `<img src="${esc(best.picture)}" alt=""/>` : ''}
+            <div><span>Lowest exact match</span><b>${money(best.price)}</b><small>${esc(best.title)}${best.size ? ` · ${esc(best.size)}` : ''} · ${best.afterpay ? 'Afterpay' : 'no Afterpay'}</small></div>
+            <div class="match-acts"><button class="btn small primary" data-use="${under}">Use $${under}</button><a href="#" data-url="${esc(best.url)}">Open</a></div>
+          </div>
+          ${list.length > 1 ? `<details class="extras comps"><summary>${list.length} exact matches</summary><div class="list">${list.map((c) => `<a href="#" class="comp" data-url="${esc(c.url)}">${c.picture ? `<img src="${esc(c.picture)}" alt=""/>` : '<span class="rl-noimg"></span>'}<span class="comp-title">${esc(c.title)}${c.afterpay ? ' <i class="pay-tag p64">Afterpay</i>' : ''}</span>${c.size ? `<i class="size-tag">${esc(c.size)}</i>` : ''}<b>${money(c.price)}</b></a>`).join('')}</div></details>` : ''}`
+        : `<p class="hint">No exact matches${MATCH.sameSize && size ? ` in size ${esc(size)}` : ''}${MATCH.afterpay === 'only' ? ' with Afterpay' : MATCH.afterpay === 'none' ? ' without Afterpay' : ''} among ${m.checked} similar listings.</p>`
+    }
+  </div>`;
+}
+// The AI's matches, filtered by your size/Afterpay choices, cheapest first.
+function matchList(s, m) {
+  const ok = new Map(m.results.filter((r) => r.match).map((r) => [r.id, r]));
+  return s.comps
+    .filter((c) => ok.has(c.id))
+    .filter((c) => !(MATCH.sameSize && sizeText(F.size)) || ok.get(c.id).sameSize !== false)
+    .filter((c) => !F.payment.afterpay || MATCH.afterpay === 'any' || (MATCH.afterpay === 'only' ? c.afterpay : !c.afterpay))
+    .sort((a, b) => a.price - b.price);
+}
+function bindMatch(box, s) {
+  $('#mSize', box)?.addEventListener('change', (e) => ((MATCH.sameSize = e.target.checked), renderSuggest()));
+  $$('#mAp button', box).forEach((b) => (b.onclick = () => ((MATCH.afterpay = b.dataset.v), renderSuggest())));
+  $$('.match [data-url]', box).forEach((a) => (a.onclick = (e) => (e.preventDefault(), api.openExternal(a.dataset.url))));
+  $('#mGo', box)?.addEventListener('click', () => runMatch(s));
+}
+async function runMatch(s) {
+  const form = F;
+  // The 40 cheapest candidates are plenty for finding the lowest true match.
+  const comps = [...s.comps].sort((a, b) => a.price - b.price).slice(0, 40);
+  F.match = { key: s.key, loading: true, count: comps.length };
+  renderSuggest();
+  const photo = F.images.find((i) => i.status === 'ok' && !i.ai);
+  try {
+    const r = await api.findMatches({
+      product: { title: F.title, brand: brandName(), name: F.name, sku: F.sku, colour: F.colour, size: sizeText(F.size), condition: F.condition === 'new' ? 'Brand new' : 'Used', image: photo ? await toJpeg(photo.src, 512) : '' },
+      comps: comps.map((c) => ({ id: c.id, title: c.title, price: c.price, picture: c.picture, size: c.size })),
+    });
+    if (F !== form) return;
+    F.match = { key: s.key, results: r.results, checked: comps.length };
+  } catch (err) {
+    if (F !== form) return;
+    F.match = { key: s.key, error: err.message };
+  }
+  renderSuggest();
 }
 function counts() {
   const tc = $('#titleCount');
@@ -1303,6 +1392,24 @@ document.addEventListener('click', (e) => {
   openViewer(group.map((x) => x.dataset.full || x.src), Math.max(0, group.indexOf(img)));
 });
 
+// Thumbnails in lists (Live, Sold, Relist, History, Questions, price comparisons…) open the viewer too,
+// at Trade Me's full size. Runs before the row's own click (open link / tick checkbox).
+const fullSize = (src) => String(src || '').replace(/\/photoserver\/(?:thumb|lv2|med|gv|tq|list|plus)\//, '/photoserver/full/');
+const THUMBS = '.sold-row > img, .rl-row > img, .comp img, .match-best img, .q-head img, .hero img, .dp-row img, .h-row > img';
+document.addEventListener(
+  'click',
+  (e) => {
+    const img = e.target.closest?.(THUMBS);
+    if (!img || !img.src) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const box = img.closest('.rl-table, .list, .match, .dp-list, .modal-card, #view') || document;
+    const group = [...box.querySelectorAll(THUMBS)].filter((x) => x.src);
+    openViewer(group.map((x) => fullSize(x.dataset.full || x.src)), Math.max(0, group.indexOf(img)));
+  },
+  true,
+);
+
 /* AI hero photo */
 // Puts the listing's product photo (the first non-AI photo) into the section's reference scene,
 // then shows it next to the original to approve before it becomes the main photo.
@@ -1313,23 +1420,97 @@ async function makeAiPhoto() {
     ? 'Add your OpenAI API key in Settings → AI photos first.'
     : !sec.aiRef
       ? `The "${sec.name}" section has no reference photo yet. Add one under Defaults → ${sec.name} → AI photo.`
-      : !product
-        ? 'Add a product photo first (look up a SKU or drop one in). The AI photo is made from it.'
-        : '';
+      : '';
   if (problem) return toast(problem);
   const form = F;
+  const choices = F.images.filter((i) => i.status === 'ok' && !i.ai);
+  const p = await pickAiSource(choices.map((i) => i.src));
+  if (!p) return;
   const vars = aiVars(sec, { brand: brandName(), name: F.name, colour: F.colour, sku: F.sku });
-  runAiPhoto(sec, product.src, vars, {
+  runAiPhoto(sec, p.src ?? choices[p.index].src, vars, {
+    kind: 'new',
     label: [brandName(), F.name].filter(Boolean).join(' ') || 'New listing',
-    stale: () => F !== form, // you moved on to another listing meanwhile
-    staleMsg: "You've started a different listing since, so it can't be added to this one.",
-    onUse: (dataUrl) => {
-      closeModal();
-      addAiImage(dataUrl);
-      if (current !== 'new') toast('AI photo added to your new listing');
+    // Auto-approve only drops it into the form it was made for; otherwise it waits for review.
+    autoUse: (dataUrl) => {
+      if (F !== form) throw new Error("you'd moved on to another listing, so it wasn't added. Review it to add it to the one you're on now.");
+      return addAiImage(dataUrl);
     },
-    autoUse: (dataUrl) => addAiImage(dataUrl),
   });
+}
+// Choose which photo the AI works from. srcs: the listing's photos. You can also add another photo
+// (file, drag-in or URL) just for the AI: it's used as the source but never added to the listing.
+// Resolves to { index } for a listing photo, { src } for an added one, or null if cancelled
+// (onCancel runs then, e.g. to reopen the screen you came from).
+function pickAiSource(srcs, { title = 'Which photo should the AI use?', go = 'Make AI photo', onCancel } = {}) {
+  return new Promise((resolve) => {
+    const extra = []; // photos added here, AI-only
+    let pick = srcs.length ? { index: 0 } : null;
+    const key = (p) => (p ? (p.src ? `x${extra.indexOf(p.src)}` : `l${p.index}`) : '');
+    const card = modal('');
+    card.classList.add('ai-wide');
+    const draw = () => {
+      card.innerHTML = `
+        <h3>${esc(title)}</h3>
+        <p class="hint" style="margin:-6px 0 14px">Pick the clearest product shot: the AI copies this item into your section's setup photo. Front-on, sharp and uncropped works best.</p>
+        <div class="ai-pick" id="apGrid">
+          ${srcs.map((s, i) => `<button class="${key(pick) === `l${i}` ? 'on' : ''}" data-k="l${i}"><img src="${esc(s)}" alt=""/></button>`).join('')}
+          ${extra.map((s, i) => `<button class="${key(pick) === `x${i}` ? 'on' : ''}" data-k="x${i}"><img src="${esc(s)}" alt=""/><span class="ai-pick-tag">AI only</span></button>`).join('')}
+          <button class="ai-pick-add" id="apAdd">＋<br/>Use another photo<br/><small>file or drop here</small></button>
+        </div>
+        <input type="file" id="apFile" accept="image/*" hidden />
+        <div class="row" style="margin-top:10px"><input id="apUrl" placeholder="…or paste an image URL and press Enter" /></div>
+        <p class="hint">Photos added here are only used to make the AI photo; they don't go on the listing.</p>
+        <p class="hint" id="apMsg" style="color:var(--red)"></p>
+        <div class="actions"><button class="btn ghost" id="cancel">Cancel</button><button class="btn primary" id="go" ${pick ? '' : 'disabled'}>${esc(go)}</button></div>`;
+      const choose = (k) => (k[0] === 'l' ? { index: +k.slice(1) } : { src: extra[+k.slice(1)] });
+      $$('[data-k]', card).forEach((b) => {
+        b.onclick = () => ((pick = choose(b.dataset.k)), draw());
+        b.ondblclick = () => resolve(choose(b.dataset.k));
+      });
+      const add = async (raw) => {
+        try {
+          extra.push(await toJpeg(raw));
+          pick = { src: extra.at(-1) };
+          draw();
+        } catch (err) {
+          $('#apMsg', card).textContent = `Couldn't use that image: ${err.message}`;
+        }
+      };
+      const addFiles = (files) => {
+        const f = [...files].find((x) => x.type.startsWith('image/'));
+        if (!f) return;
+        const r = new FileReader();
+        r.onload = () => add(r.result);
+        r.readAsDataURL(f);
+      };
+      $('#apAdd', card).onclick = () => $('#apFile', card).click();
+      $('#apFile', card).onchange = (e) => addFiles(e.target.files);
+      const grid = $('#apGrid', card);
+      grid.ondragover = (e) => e.preventDefault();
+      grid.ondrop = (e) => (e.preventDefault(), addFiles(e.dataTransfer.files));
+      $('#apUrl', card).onkeydown = async (e) => {
+        if (e.key !== 'Enter' || !e.target.value.trim()) return;
+        $('#apMsg', card).textContent = 'Loading…';
+        try {
+          await add(await api.fetchImage(e.target.value.trim()));
+        } catch (err) {
+          $('#apMsg', card).textContent = `Couldn't load that URL: ${err.message}`;
+        }
+      };
+      $('#cancel', card).onclick = () => (onCancel ? onCancel() : closeModal(), resolve(null));
+      $('#go', card).onclick = () => pick && resolve(pick);
+    };
+    draw();
+  });
+}
+// The AI photo pieces a listing needs, or why it can't have one: { sec, product } | { problem }.
+function aiReady() {
+  const sec = P();
+  const product = F.images.find((i) => i.status === 'ok' && !i.ai);
+  if (!S.openai?.hasKey) return { problem: 'Add your OpenAI API key in Settings → AI photos first.' };
+  if (!sec.aiRef) return { problem: `The "${sec.name}" section has no reference photo yet (Defaults → ${sec.name} → AI photo).` };
+  if (!product) return { problem: 'Add a product photo first; the AI photo is made from it.' };
+  return { sec, product };
 }
 // Placeholder values for the AI prompt.
 const aiVars = (sec, { brand = '', name = '', colour = '', sku = '' } = {}) => ({
@@ -1341,19 +1522,67 @@ const aiVars = (sec, { brand = '', name = '', colour = '', sku = '' } = {}) => (
   category: sec.aiCategory?.trim() || String(sec.category?.path || '').split('›').pop().trim().toLowerCase() || 'item',
   section: sec.name || '',
 });
-// Generate → side-by-side review → onUse(dataUrl) / onBack(). Shared by New listing and Live.
-// Each AI photo is a job. You can watch it, or send it to the background (the tray in the corner)
-// and review it when it's ready. Several can run at once.
+// AI photo jobs. Each is generate → side-by-side review → use. You can watch one, or send it to the
+// background (the AI photos tab in the sidebar) and review it later. Several can run at once.
+// Jobs are saved to disk, so finished photos (and queued listings) are still there after a restart.
+//
+// kind says what "use" means, so it still works after a restart:
+//   new   – add to the New listing form that's open
+//   live  – save as the main photo of a live listing (payload: { accountId, listingId })
+//   queue – list a new listing with this photo first (payload: { accountId, listing, photos, thumb })
+// In-session callers can pass their own opts (onUse/autoUse/onBack) that override these.
 const AI_JOBS = [];
-let aiJobSeq = 0;
-function runAiPhoto(sec, productSrc, vars, opts) {
-  const job = { id: ++aiJobSeq, sec, productSrc, vars, opts, label: opts.label || vars.name || vars.product, status: 'running', started: Date.now(), bg: !!opts.background };
+const newJobId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+const jobSnapshot = (j) => ({
+  id: j.id, kind: j.kind, payload: j.payload, label: j.label, status: j.status, error: j.error, res: j.res, started: j.started,
+  sec: j.sec && { id: j.sec.id, name: j.sec.name, aiRef: j.sec.aiRef, aiCategory: j.sec.aiCategory, category: j.sec.category },
+  productSrc: j.productSrc, vars: j.vars,
+});
+const persistJob = (j) => api.aiJobSave(jobSnapshot(j)).catch(() => {});
+
+function kindOpts(job) {
+  if (job.kind === 'live')
+    return {
+      useLabel: 'Use as main photo (saves to Trade Me)',
+      onUse: async (dataUrl) => {
+        await saveAiToListing(job.payload, dataUrl);
+        toast(`AI photo saved: ${job.label}`);
+      },
+    };
+  if (job.kind === 'queue')
+    return {
+      useLabel: 'Use as main photo & list',
+      altLabel: 'List without AI photo',
+      onUse: (dataUrl) => listQueued(job, dataUrl),
+      onAlt: () => listQueued(job, null),
+    };
+  return {
+    useLabel: current === 'new' && F ? 'Add to current listing' : 'Use as main photo',
+    onUse: (dataUrl) => {
+      if (!F) F = freshForm();
+      addAiImage(dataUrl);
+      if (current !== 'new') toast('AI photo added to your new listing');
+    },
+  };
+}
+
+function runAiPhoto(sec, productSrc, vars, opts = {}) {
+  const job = {
+    id: newJobId(), kind: opts.kind || 'new', payload: opts.payload || null, sec, productSrc, vars,
+    label: opts.label || vars.name || vars.product, status: 'running', started: Date.now(), bg: !!opts.background,
+  };
+  job.opts = { ...kindOpts(job), ...opts };
   AI_JOBS.push(job);
+  persistJob(job);
   if (!opts.background) watchAiJob(job);
   renderAiTray();
-  // Resolves when the job has finished (made, failed, or auto-applied); used to pace bulk runs.
+  return generateJob(job);
+}
+// Resolves when the job has finished (made, failed, or auto-applied); used to pace bulk runs.
+function generateJob(job) {
+  const { opts } = job;
   return api
-    .aiGenerate({ refFile: sec.aiRef, productDataUrl: productSrc, vars })
+    .aiGenerate({ refFile: job.sec.aiRef, productDataUrl: job.productSrc, vars: job.vars })
     .then((res) => {
       job.status = 'done';
       job.res = res;
@@ -1364,18 +1593,20 @@ function runAiPhoto(sec, productSrc, vars, opts) {
       job.error = err.message;
     })
     .finally(async () => {
-      // Auto-approve (Settings → AI photos): apply straight away, no review.
-      if (job.status === 'done' && S.ai?.autoApprove && opts.autoUse && !opts.stale?.()) {
+      persistJob(job);
+      // Auto-approve (Settings → AI photos): use it straight away, no review.
+      const auto = opts.autoUse || (job.kind !== 'new' ? opts.onUse : null);
+      if (job.status === 'done' && S.ai?.autoApprove && auto && !opts.stale?.()) {
         if (isWatching(job)) closeModal();
-        dropAiJob(job);
         try {
-          await opts.autoUse(job.res.dataUrl);
-          toast(`AI photo added: ${job.label}`);
+          await auto(job.res.dataUrl);
+          dropAiJob(job);
+          toast(job.kind === 'queue' ? `Listed with AI photo: ${job.payload?.listing?.Title || job.label}` : `AI photo added: ${job.label}`);
         } catch (err) {
-          job.status = 'error';
-          job.error = `Made the photo but couldn't add it: ${err.message}`;
-          AI_JOBS.push(job);
+          job.useError = err.message;
+          job.bg = true;
           renderAiTray();
+          toast(`AI photo made, but couldn't use it: ${err.message}`);
         }
         return;
       }
@@ -1400,43 +1631,112 @@ function watchAiJob(job) {
 function dropAiJob(job) {
   const i = AI_JOBS.indexOf(job);
   if (i >= 0) AI_JOBS.splice(i, 1);
+  api.aiJobDelete(job.id).catch(() => {});
   renderAiTray();
 }
+function retryAiJob(job) {
+  job.status = 'running';
+  job.error = job.res = job.useError = undefined;
+  job.bg = false;
+  persistJob(job);
+  watchAiJob(job);
+  renderAiTray();
+  generateJob(job);
+}
 function reviewAiJob(job) {
+  if (!job) return;
   if (job.status === 'running') return watchAiJob(job);
   const { opts } = job;
-  const again = () => (dropAiJob(job), runAiPhoto(job.sec, job.productSrc, job.vars, { ...opts, background: false }));
-  // Reviewing from the tray: Discard just closes, rather than reopening the screen it came from.
+  // Reviewing from the tab: Discard just closes, rather than reopening the screen it came from.
   const back = () => (opts.onBack && !job.bg ? opts.onBack() : closeModal());
   if (job.status === 'error') {
-    modal(`<h3>Couldn't make the AI photo</h3><p class="hint">${esc(job.label)}</p><p style="color:var(--red)">${esc(job.error)}</p><div class="actions"><button class="btn ghost" id="cancel">Dismiss</button>${job.sec ? '<button class="btn primary" id="go">Try again</button>' : ''}</div>`);
+    modal(`<h3>Couldn't make the AI photo</h3><p class="hint">${esc(job.label)}</p><p style="color:var(--red)">${esc(job.error)}</p>
+      <div class="actions"><button class="btn ghost" id="cancel">Dismiss</button>${opts.onAlt ? `<button class="btn" id="alt">${esc(opts.altLabel)}</button>` : ''}${job.sec ? '<button class="btn primary" id="go">Try again</button>' : ''}</div>`);
     $('#cancel').onclick = () => (dropAiJob(job), back());
-    $('#go')?.addEventListener('click', again);
+    $('#go')?.addEventListener('click', () => retryAiJob(job));
+    $('#alt')?.addEventListener('click', () => useJob(job, opts.onAlt));
     return;
   }
   const blocked = opts.stale?.() ? opts.staleMsg || "This photo's listing isn't open any more." : '';
   const res = job.res;
   const card = modal(`
-    <h3>Use this AI photo?</h3>
+    <h3>${job.kind === 'queue' ? 'Use this AI photo and list?' : 'Use this AI photo?'}</h3>
     <p class="hint" style="margin-top:-6px">${esc(job.label)}</p>
     <div class="ai-compare">
       <figure><img src="${job.productSrc}" alt=""/><figcaption>Product photo</figcaption></figure>
       <figure><img src="${res.dataUrl}" alt=""/><figcaption>AI photo · ${esc(res.model)}${res.cost != null ? ` · cost about US$${res.cost.toFixed(3)}` : ''}</figcaption></figure>
     </div>
     <p class="hint">Check the details match the real item (logos, text, colours, which side things are printed on) before using it. Your product photo stays in the listing too.</p>
+    ${job.useError ? `<p class="hint" style="color:var(--red)">Last try: ${esc(job.useError)}</p>` : ''}
     ${blocked ? `<p class="hint" style="color:var(--red)">${esc(blocked)}</p>` : ''}
-    <div class="actions"><button class="btn ghost" id="cancel">Discard</button><button class="btn ghost" id="later">Later</button><button class="btn" id="again">Try again</button><button class="btn primary" id="go" ${blocked ? 'disabled' : ''}>${esc(opts.useLabel || 'Use as main photo')}</button></div>`);
+    <p class="hint" id="useMsg" style="color:var(--red)"></p>
+    <div class="actions"><button class="btn ghost" id="cancel">Discard</button><button class="btn ghost" id="later">Later</button><button class="btn" id="again">Try again</button>${opts.onAlt ? `<button class="btn" id="alt">${esc(opts.altLabel)}</button>` : ''}<button class="btn primary" id="go" ${blocked ? 'disabled' : ''}>${esc(opts.useLabel || 'Use as main photo')}</button></div>`);
   card.classList.add('ai-wide');
   $('#cancel').onclick = () => (dropAiJob(job), back());
   $('#later').onclick = () => (closeModal(), renderAiTray());
-  $('#again').onclick = again;
-  $('#go').onclick = () => (dropAiJob(job), opts.onUse(res.dataUrl));
+  $('#again').onclick = () => retryAiJob(job);
+  $('#alt')?.addEventListener('click', () => useJob(job, opts.onAlt));
+  $('#go').onclick = () => useJob(job, opts.onUse, res.dataUrl);
+}
+// Runs a use action; the job only leaves the queue once it worked.
+async function useJob(job, fn, dataUrl) {
+  $$('#modalCard .actions button').forEach((b) => (b.disabled = true));
+  const go = $('#go');
+  if (go) go.textContent = job.kind === 'queue' ? 'Listing…' : 'Saving…';
+  try {
+    await fn(dataUrl);
+    dropAiJob(job);
+    if (!$('#modal').classList.contains('hidden') && $('#modalCard').contains(go)) closeModal();
+  } catch (err) {
+    job.useError = err.message;
+    if ($('#useMsg')) $('#useMsg').textContent = err.message;
+    $$('#modalCard .actions button').forEach((b) => (b.disabled = false));
+    if (go) go.textContent = job.opts.useLabel || 'Use as main photo';
+  }
+}
+// Saves an AI photo in front of a live listing's current photos (re-read at save time).
+async function saveAiToListing({ accountId, listingId }, dataUrl) {
+  const fresh = await api.getListing({ accountId, listingId });
+  const keep = (fresh.PhotoIds || []).slice(0, 19).map((id) => ({ id }));
+  await api.saveListingPhotos({ accountId, listingId, photos: [{ base64: (await toJpeg(dataUrl)).split(',')[1] }, ...keep] });
+  dataChanged('live');
+}
+// Lists a queued new listing: the AI photo (if any) first, then the photos it was queued with.
+async function listQueued(job, dataUrl) {
+  const p = job.payload;
+  const photos = [...(dataUrl ? [await toJpeg(dataUrl)] : []), ...p.photos];
+  const r = await api.submit({
+    accountId: p.accountId,
+    listing: p.listing,
+    photos: photos.map((src, n) => ({ base64: src.split(',')[1], fileName: `${p.listing.SKU || 'photo'}-${n + 1}.jpg` })),
+    meta: { thumb: await toJpeg(photos[0], 160) },
+  });
+  S = await api.getSettings();
+  dataChanged('live');
+  toast(`Listed #${r.listingId}: ${p.listing.Title}`);
+}
+// Brings back saved jobs after a restart. Ones that were still generating come back as interrupted.
+async function restoreAiJobs() {
+  const saved = await api.aiJobsLoad().catch(() => []);
+  for (const j of saved) {
+    if (AI_JOBS.some((x) => x.id === j.id)) continue;
+    const job = { ...j, bg: true };
+    if (job.status === 'running') {
+      job.status = 'error';
+      job.error = 'Interrupted: Tagline was closed while this was being made.';
+      persistJob(job);
+    }
+    job.opts = kindOpts(job);
+    AI_JOBS.push(job);
+  }
+  renderAiTray();
 }
 // "AI photos" tab at the bottom of the sidebar; click it for the list of jobs.
 let aiTrayOpen = false;
 function renderAiTray() {
   const tab = $('#aiTab');
   const running = AI_JOBS.filter((j) => j.status === 'running').length;
+  api.aiRunning(running).catch(() => {}); // so closing the app can warn while photos are generating
   const ready = AI_JOBS.filter((j) => j.status === 'done').length;
   const failed = AI_JOBS.filter((j) => j.status === 'error').length;
   tab.hidden = !AI_JOBS.length;
@@ -1460,7 +1760,7 @@ function renderAiTray() {
   tray.innerHTML = AI_JOBS.map(
     (j) => `<div class="ai-job ${j.status}">
       ${j.status === 'running' ? '<div class="spinner small"></div>' : j.status === 'done' ? '<span class="ai-dot ok">✓</span>' : '<span class="ai-dot err">!</span>'}
-      <div class="ai-job-text"><b>${esc(j.label)}</b><small>${j.status === 'running' ? 'Making AI photo…' : j.status === 'done' ? 'Ready to review' : 'Failed'}</small></div>
+      <div class="ai-job-text"><b>${esc(j.label)}</b><small>${j.status === 'running' ? 'Making AI photo…' : j.status === 'done' ? (j.useError ? "Made, but couldn't be used" : j.kind === 'queue' ? 'Ready: review to list' : 'Ready to review') : 'Failed'}</small></div>
       <button class="btn small ${j.status === 'done' ? 'primary' : ''}" data-job="${j.id}">${j.status === 'running' ? 'View' : j.status === 'done' ? 'Review' : 'Details'}</button>
     </div>`,
   ).join('');
@@ -1469,7 +1769,7 @@ function renderAiTray() {
       (b.onclick = () => {
         aiTrayOpen = false;
         renderAiTray();
-        reviewAiJob(AI_JOBS.find((j) => j.id === +b.dataset.job));
+        reviewAiJob(AI_JOBS.find((j) => String(j.id) === b.dataset.job));
       }),
   );
 }
@@ -1646,6 +1946,7 @@ async function confirmList() {
   if (!listing) return;
   setMsg('');
   const photos = F.images.filter((i) => i.status === 'ok');
+  const ai = aiReady(); // { sec, product } when this listing can be queued for an AI photo
   const acc = S.accounts.find((a) => a.id === F.accountId);
   const price = F.type === 'buynow' ? `$${(+F.price).toFixed(2)} Buy Now` : `$${(+F.start).toFixed(2)} start`;
   // Re-price exactly what's about to be listed.
@@ -1673,8 +1974,26 @@ async function confirmList() {
     </div>
     <div class="summary cost-box">${feeRows}</div>
     <p class="hint" id="prog"></p>
-    <div class="actions"><button class="btn ghost" id="cancel">Cancel</button><button class="btn primary" id="go">${fees.total ? `List now · ${money(fees.total)}` : 'List now'}</button></div>`);
+    ${ai.sec ? `<p class="hint">Or queue it: an AI hero photo is made from your first photo (about 45s) and the listing goes live ${S.ai?.autoApprove ? 'as soon as it\'s ready (auto-approve is on)' : 'once you review and OK the photo in the AI photos tab'}. You can carry on with the next listing meanwhile.</p>` : ''}
+    <div class="actions"><button class="btn ghost" id="cancel">Cancel</button>${ai.sec ? `<button class="btn" id="queue">✨ List when AI photo is ready</button>` : ''}<button class="btn primary" id="go">${fees.total ? `List now · ${money(fees.total)}` : 'List now'}</button></div>`);
   $('#cancel', card).onclick = closeModal;
+  // Queue: snapshot this listing, clear the form, and list it when the AI photo is used.
+  $('#queue', card)?.addEventListener('click', async () => {
+    const snap = {
+      accountId: F.accountId,
+      listing,
+      photos: photos.filter((p) => !p.ai).map((p) => p.src),
+    };
+    const p = await pickAiSource(snap.photos, { go: 'Make AI photo & queue listing', onCancel: () => confirmList() });
+    if (!p) return;
+    const vars = aiVars(ai.sec, { brand: brandName(), name: F.name, colour: F.colour, sku: F.sku });
+    runAiPhoto(ai.sec, p.src ?? snap.photos[p.index], vars, { kind: 'queue', payload: snap, label: `Listing: ${listing.Title}`, background: true });
+    const keep = { accountId: F.accountId, category: F.category, attrs: F.attrs, catInfo: F.catInfo, type: F.type };
+    F = { ...freshForm(F.profileId, F.accountId), ...keep };
+    closeModal();
+    if (current === 'new') renderNew();
+    toast('Queued: it lists when the AI photo is ready (see AI photos in the sidebar)');
+  });
   $('#go', card).onclick = async () => {
     $('#go', card).disabled = $('#cancel', card).disabled = true;
     try {
@@ -1976,7 +2295,7 @@ function renderLive() {
               !items.length
                 ? `<div class="empty">${q ? 'Nothing matches that filter.' : 'Nothing for sale right now.'}</div>`
                 : `<div class="rl-table sold-table live-table ${showAcc ? 'with-acc' : ''}">
-                    <div class="sold-row rl-head"><input type="checkbox" id="liveAll" ${sel.length && sel.length === items.length ? 'checked' : ''} ${LIVE.running ? 'disabled' : ''}/><span></span><span>Listing</span>${showAcc ? '<span>Account</span>' : ''}<span>Source</span><span>Buy Now</span><span>Bids</span><span title="Views">Views</span><span title="Watchlists (bidders + watchers)">Watching</span><span>Ends in</span><span></span></div>
+                    <div class="sold-row rl-head"><input type="checkbox" id="liveAll" ${sel.length && sel.length === items.length ? 'checked' : ''} ${LIVE.running ? 'disabled' : ''}/><span></span><span>Listing</span>${showAcc ? '<span>Account</span>' : ''}<span>Source</span><span>Buy Now</span><span title="Cheapest exact match on Trade Me (🔎 Lowest match)">Lowest</span><span>Bids</span><span title="Views">Views</span><span title="Watchlists (bidders + watchers)">Watching</span><span>Ends in</span><span></span></div>
                     ${items
                       .map(
                         (i) => `<div class="sold-row">
@@ -1986,6 +2305,7 @@ function renderLive() {
                           ${showAcc ? `<span class="rl-muted">${esc(i.nickname)}</span>` : ''}
                           <span>${fromApp.has(+i.listingId) ? '<i class="pay-tag">App</i>' : '<i class="pay-tag" style="opacity:.6">Trade Me</i>'}</span>
                           <span class="rl-num">${i.buyNow ? dollars(i.buyNow) : '—'}</span>
+                          <span class="rl-num">${liveMatchCell(i)}</span>
                           <span class="rl-muted">${i.bids ? `${i.bids} · ${dollars(i.maxBid)}` : i.buyNow && !i.start ? '' : `from ${dollars(i.start)}`}</span>
                           <span class="rl-num ${i.views ? '' : 'rl-muted'}">${i.views ?? 0}</span>
                           <span class="rl-num ${i.watchers ? 'watch-num' : 'rl-muted'}">${i.watchers ?? 0}</span>
@@ -1998,6 +2318,7 @@ function renderLive() {
                   <p class="hint">Listings on Trade Me's newer platform may not come through the API, same as Sold.</p>
                   <div class="bar">
                     <div class="msg" id="liveMsg">${sel.length ? `${sel.length} selected` : 'Tick listings to change them together.'}</div>
+                    <button class="btn" id="matchBtn" ${sel.length && !LIVE.running ? '' : 'disabled'}>🔎 Lowest match (${sel.length})</button>
                     <button class="btn" id="bulkAiBtn" ${sel.length && !LIVE.running ? '' : 'disabled'}>✨ AI hero photos (${sel.length})</button>
                     <button class="btn primary" id="dropBtn" ${sel.length && !LIVE.running ? '' : 'disabled'}>${LIVE.running ? 'Updating…' : `Edit price (${sel.length})`}</button>
                   </div>`
@@ -2028,6 +2349,8 @@ function renderLive() {
   );
   $('#dropBtn')?.addEventListener('click', () => dropPrices(sel));
   $('#bulkAiBtn')?.addEventListener('click', () => bulkAiPhotos(sel));
+  $('#matchBtn')?.addEventListener('click', () => liveMatchStart(sel));
+  $$('[data-lm]').forEach((a) => (a.onclick = (e) => (e.preventDefault(), e.stopPropagation(), api.openExternal(a.dataset.lm))));
   if (!LIVE.items && !LIVE.loading && !LIVE.error && accs.length) loadLive();
 }
 
@@ -2046,6 +2369,9 @@ function droppedPrice(price, pct, round) {
 function dropPrices(list) {
   let pct = 10;
   let round = 'none';
+  // Listings with a lowest exact match (Live → 🔎 Lowest match) can be priced against it in one click.
+  const lowest = (i) => LIVE.match?.[i.listingId]?.best?.price;
+  const matched = list.filter((i) => lowest(i) > 0);
   const card = modal(`
     <h3>Edit price</h3>
     <p class="hint modal-sub">${list.length} listing${list.length > 1 ? 's' : ''} selected</p>
@@ -2066,6 +2392,14 @@ function dropPrices(list) {
       </div>
       <span class="dp-eg" id="dpEg"></span>
     </div>
+    ${
+      matched.length
+        ? `<div class="dp-field">
+            <span class="dp-label">Match lowest exact match <span style="font-weight:400">(${matched.length} of ${list.length} have one, from 🔎 Lowest match)</span></span>
+            <div class="seg" id="dpMatch">${[[0, 'Match it'], [1, '$1 under'], [5, '$5 under'], [10, '$10 under']].map(([u, l]) => `<button data-u="${u}">${l}</button>`).join('')}</div>
+          </div>`
+        : ''
+    }
     <div class="dp-list" id="dpPreview"></div>
     <p class="hint">Click a new price to type your own. Listings with bids are locked by Trade Me and will show an error.</p>
     <div class="actions"><button class="btn ghost" id="cancel">Cancel</button><button class="btn primary" id="go">Update prices</button></div>`);
@@ -2099,11 +2433,12 @@ function dropPrices(list) {
   };
   const preview = () => {
     typed = {};
+    $$('#dpMatch button', card).forEach((x) => x.classList.remove('on')); // a new % replaces matched prices
     $('#dpPreview', card).innerHTML = plan()
       .map(
         (r) => `<div class="dp-row" data-id="${r.i.listingId}">
           ${r.i.picture ? `<img src="${esc(r.i.picture)}" alt=""/>` : '<span class="rl-noimg"></span>'}
-          <span class="dp-title">${esc(r.i.title)}</span>
+          <span class="dp-title">${esc(r.i.title)}${lowest(r.i) ? `<small class="dp-low">lowest match ${dollars(lowest(r.i))}</small>` : ''}</span>
           <span class="dp-from">${dollars(r.from)}</span>
           <label class="dp-to"><span>$</span><input type="number" min="0.5" step="0.01" data-to="${r.i.listingId}" value="${r.to >= 0.5 ? (Number.isInteger(r.to) ? r.to : r.to.toFixed(2)) : ''}" title="Type your own price for this listing" /></label>
           <span class="dp-pctchg"></span>
@@ -2141,6 +2476,21 @@ function dropPrices(list) {
         round = b.dataset.r;
         $$('#dpRound button', card).forEach((x) => x.classList.toggle('on', x === b));
         preview();
+      }),
+  );
+  // Match lowest: sets the rows that have a lowest match to that price (or $N under it); others stay
+  // on the % drop. You can still type over any row afterwards.
+  $$('#dpMatch button', card).forEach(
+    (b) =>
+      (b.onclick = () => {
+        $$('#dpMatch button', card).forEach((x) => x.classList.toggle('on', x === b));
+        for (const i of matched) {
+          const to = Math.max(0.5, Math.round((lowest(i) - +b.dataset.u) * 100) / 100);
+          typed[i.listingId] = to;
+          const el = $(`[data-to="${i.listingId}"]`, card);
+          if (el) el.value = Number.isInteger(to) ? to : to.toFixed(2);
+        }
+        updateGo();
       }),
   );
   $('#cancel', card).onclick = closeModal;
@@ -2202,6 +2552,68 @@ function liveMenu(btn, item) {
   m.querySelector('[data-a=withdraw]').onclick = () => (close(), withdrawListing(item));
 }
 
+// Lowest exact match for ticked live listings (same AI check as New listing), shown in the Lowest column.
+LIVE.match = {}; // listingId → { loading } | { best, count, checked } | { error }
+const LM = { sameSize: true, afterpay: 'any' };
+const sizeFromTitle = (t) => (String(t).match(/\bUS\s?(\d{1,2}(?:\.5)?\s?[WYC]?)\b/i) || String(t).match(/\b(\d{1,2}(?:\.5)?[WYC])\b/i) || [])[1]?.replace(/\s/g, '') || '';
+// Lowest column: the cheapest match's price, linked to it. Red when it's under yours, green when you're
+// the cheapest. Hover for details.
+function liveMatchCell(i) {
+  const m = LIVE.match[i.listingId];
+  if (!m) return '<span class="rl-muted">—</span>';
+  if (m.loading) return '<div class="spinner small" title="Finding lowest match…"></div>';
+  if (m.error) return `<span class="lm-err" title="${esc(m.error)}">!</span>`;
+  if (!m.best) return `<span class="rl-muted" title="No exact match on Trade Me${m.filters ? ` (${esc(m.filters)})` : ''} · checked ${m.checked}">none</span>`;
+  const mine = i.buyNow || i.start || 0;
+  const diff = Math.round((mine - m.best.price) * 100) / 100;
+  const tip = `${m.best.title}${m.best.size ? ` · ${m.best.size}` : ''}${m.best.afterpay ? ' · Afterpay' : ''} · ${diff > 0 ? `you're ${money(diff)} higher` : diff < 0 ? `you're ${money(-diff)} cheaper` : 'same price'}${m.count > 1 ? ` · ${m.count} matches` : ''}`;
+  return `<a href="#" class="lm-link ${diff > 0 ? 'lm-err' : 'lm-ok'}" data-lm="${esc(m.best.url)}" title="${esc(tip)}">${dollars(m.best.price)}</a>`;
+}
+function liveMatchStart(list) {
+  if (!S.openai?.hasKey) return toast('Add your OpenAI API key in Settings → AI photos first.');
+  modal(`
+    <h3>Lowest exact match</h3>
+    <p class="hint" style="margin-top:-6px">${list.length} listing${list.length > 1 ? 's' : ''} · AI checks similar Trade Me listings (titles + photos) and keeps only the exact same product · about 4c each</p>
+    <label class="ai-auto"><input type="checkbox" id="lmSize" ${LM.sameSize ? 'checked' : ''}/><span><b>Same size only</b><small>Uses the size in each listing's title (e.g. US10, 8W).</small></span></label>
+    <div class="f"><span>Compare against</span><div class="seg" id="lmAp">${[['any', 'Any listing'], ['only', 'With Afterpay'], ['none', 'Without Afterpay']].map(([v, l]) => `<button data-v="${v}" class="${LM.afterpay === v ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    <div class="actions"><button class="btn ghost" id="cancel">Cancel</button><button class="btn primary" id="go">Check ${list.length}</button></div>`);
+  $$('#lmAp button').forEach((b) => (b.onclick = () => ((LM.afterpay = b.dataset.v), $$('#lmAp button').forEach((x) => x.classList.toggle('on', x === b)))));
+  $('#cancel').onclick = closeModal;
+  $('#go').onclick = () => {
+    LM.sameSize = $('#lmSize').checked;
+    closeModal();
+    list.forEach((i) => (LIVE.match[i.listingId] = { loading: true }));
+    if (current === 'live') renderLive();
+    runPool(list, 3, async (i) => {
+      try {
+        LIVE.match[i.listingId] = await liveMatchOne(i);
+      } catch (err) {
+        LIVE.match[i.listingId] = { error: err.message };
+      }
+      if (current === 'live' && !LIVE.running) renderLive();
+    }).then(() => toast(`Lowest match checked for ${list.length} listing${list.length > 1 ? 's' : ''}`));
+  };
+}
+async function liveMatchOne(i) {
+  const words = compWords(i.title, i.sku);
+  const comps = await api.priceComps({ accountId: i.accountId, sku: i.sku || '', name: words, brand: '', isNew: true }).then((r) => r.comps || []);
+  const cands = comps.filter((c) => +c.id !== +i.listingId).sort((a, b) => a.price - b.price).slice(0, 40);
+  if (!cands.length) return { best: null, checked: 0 };
+  const size = sizeFromTitle(i.title);
+  const r = await api.findMatches({
+    product: { title: i.title, sku: i.sku, size, condition: 'Brand new', image: fullSize(i.picture) },
+    comps: cands.map((c) => ({ id: c.id, title: c.title, price: c.price, picture: c.picture, size: c.size })),
+  });
+  const ok = new Map(r.results.filter((x) => x.match).map((x) => [x.id, x]));
+  const list = cands
+    .filter((c) => ok.has(c.id))
+    .filter((c) => !(LM.sameSize && size) || ok.get(c.id).sameSize !== false)
+    .filter((c) => LM.afterpay === 'any' || (LM.afterpay === 'only' ? c.afterpay : !c.afterpay))
+    .sort((a, b) => a.price - b.price);
+  const filters = [LM.sameSize && size && `size ${size}`, LM.afterpay === 'only' && 'with Afterpay', LM.afterpay === 'none' && 'without Afterpay'].filter(Boolean).join(', ');
+  return { best: list[0] || null, count: list.length, checked: cands.length, filters };
+}
+
 // The section (with a reference photo) whose category matches a listing's category number, else the
 // first section that has a reference photo.
 function aiSectionFor(accountId, category) {
@@ -2251,7 +2663,7 @@ async function runPool(items, n, fn) {
 }
 async function bulkAiOne(item, secId) {
   const fail = (msg) => {
-    AI_JOBS.push({ id: ++aiJobSeq, label: item.title, status: 'error', error: msg, opts: {}, bg: true });
+    AI_JOBS.push({ id: newJobId(), kind: 'live', label: item.title, status: 'error', error: msg, opts: {}, bg: true });
     renderAiTray();
   };
   let L;
@@ -2270,28 +2682,13 @@ async function bulkAiOne(item, secId) {
   } catch (err) {
     return fail(`Couldn't load its photo: ${err.message}`);
   }
-  // Saves the AI photo in front of the listing's current photos (re-read at save time).
-  const saveToListing = async (dataUrl) => {
-    const fresh = await api.getListing({ accountId: item.accountId, listingId: item.listingId });
-    const keep = (fresh.PhotoIds || []).slice(0, 19).map((id) => ({ id }));
-    await api.saveListingPhotos({ accountId: item.accountId, listingId: item.listingId, photos: [{ base64: (await toJpeg(dataUrl)).split(',')[1] }, ...keep] });
-    dataChanged('live');
-  };
+  // kind 'live': using it saves it in front of the listing's current photos on Trade Me.
   return runAiPhoto(s, productSrc, aiVars(s, { name: L.Title, sku: L.SKU }), {
+    kind: 'live',
+    payload: { accountId: item.accountId, listingId: item.listingId },
     label: L.Title,
     background: true,
     quiet: true,
-    useLabel: 'Use as main photo (saves to Trade Me)',
-    onUse: async (dataUrl) => {
-      closeModal();
-      try {
-        await saveToListing(dataUrl);
-        toast(`AI photo saved: ${L.Title}`);
-      } catch (err) {
-        toast(`Couldn't save: ${err.message}`);
-      }
-    },
-    autoUse: saveToListing,
   });
 }
 
@@ -2376,23 +2773,29 @@ async function editLivePhotos(item, { ai = false } = {}) {
 
   async function makeAi() {
     const s = sec();
-    const product = st.photos.find((p) => !p.ai);
-    const problem = !S.openai?.hasKey ? 'Add your OpenAI API key in Settings → AI photos first.' : !s?.aiRef ? 'Pick a section that has a reference photo (Defaults → section → AI photo).' : !product ? 'This listing needs a product photo to work from.' : '';
+    const choices = st.photos.filter((p) => !p.ai);
+    const problem = !S.openai?.hasKey ? 'Add your OpenAI API key in Settings → AI photos first.' : !s?.aiRef ? 'Pick a section that has a reference photo (Defaults → section → AI photo).' : '';
     if (problem) return ($('#lpMsg').textContent = problem);
-    $('#lpAi').disabled = true;
-    $('#lpAi').textContent = 'Getting photo…';
+    const p = await pickAiSource(choices.map((x) => x.src), { onCancel: render });
+    if (!p) return;
+    const product = p.src ? { src: p.src } : choices[p.index]; // p.src: a photo added just for the AI
+    modal(`<h3>Getting the photo…</h3><div class="empty"><div class="spinner" style="margin:auto"></div></div>`);
     let productSrc;
     try {
       productSrc = product.id ? await toJpeg(await api.fetchImage(product.full)) : product.src;
     } catch (err) {
+      render();
       $('#lpMsg').textContent = `Couldn't load the product photo: ${err.message}`;
-      $('#lpAi').disabled = false;
-      $('#lpAi').textContent = '✨ Make AI hero photo';
       return;
     }
     runAiPhoto(s, productSrc, aiVars(s, { name: L.Title, sku: L.SKU }), {
+      kind: 'live',
+      payload: { accountId: item.accountId, listingId: item.listingId },
       label: L.Title,
       onBack: render,
+      // Using it puts it first in this Edit photos window (reopened if you'd closed it), to save with
+      // your other changes. After a restart it saves straight to the listing instead.
+      useLabel: 'Use as main photo',
       onUse: async (dataUrl) => {
         st.photos.unshift({ src: await toJpeg(dataUrl), ai: true });
         render();
@@ -2573,9 +2976,16 @@ function renderSold() {
   const accs = envAccounts();
   SOLD.scope = pickScope(SOLD.scope);
   const cutoff = Date.now() - SOLD.days * 86400000;
-  const items = (SOLD.items || []).filter((i) => !i.soldDate || new Date(i.soldDate) >= cutoff);
+  // Your courier cost (Settings) comes off every sale that ships (not pickups).
+  const courier = +S.courierCost || 0;
+  const items = (SOLD.items || [])
+    .filter((i) => !i.soldDate || new Date(i.soldDate) >= cutoff)
+    .map((i) => {
+      const post = i.pickup ? 0 : courier;
+      return { ...i, courier: post, payout: Math.round((i.payout - post) * 100) / 100 };
+    });
   const sum = (k) => items.reduce((s, i) => s + (i[k] || 0), 0);
-  const fees = sum('processing') + sum('success');
+  const fees = sum('processing') + sum('success') + sum('courier');
   const showAcc = SOLD.scope === 'all' && accs.length > 1;
   const when = (iso) => new Date(iso).toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' });
   // One account selected: choose between our sales list and Trade Me's own Sold page.
@@ -2616,7 +3026,7 @@ function renderSold() {
           : `<div class="sold-stats">
               <div><span>Sales</span><b>${items.length}</b></div>
               <div><span>Buyers paid</span><b>${dollars(sum('total'))}</b></div>
-              <div><span>Fees</span><b>${fees ? '−' + money(fees) : '$0.00'}</b></div>
+              <div><span>Fees${courier ? ' + courier' : ''}</span><b>${fees ? '−' + money(fees) : '$0.00'}</b></div>
               <div class="payout-stat"><span>Your payout</span><b>${dollars(sum('payout'))}</b></div>
             </div>
             ${
@@ -2633,7 +3043,7 @@ function renderSold() {
                           <span class="rl-muted">${i.soldDate ? when(i.soldDate) : ''}</span>
                           <span>${i.method ? `<i class="pay-tag p${i.method}">${PAY_NAME[i.method] || 'Other'}</i>` : `<i class="pay-tag">${i.pending ? 'Pending' : 'Unpaid'}</i>`}</span>
                           <span class="rl-num">${dollars(i.total)}</span>
-                          <span class="rl-muted" title="${i.processing ? `${PAY_NAME[i.method] || 'Payment'} fee ${money(i.processing)}` : ''}${i.processing && i.success ? ' + ' : ''}${i.success ? `success fee ${money(i.success)}` : ''}">${i.processing + i.success ? '−' + money(i.processing + i.success) : '—'}</span>
+                          <span class="rl-muted" title="${esc([i.processing && `${PAY_NAME[i.method] || 'Payment'} fee ${money(i.processing)}`, i.success && `success fee ${money(i.success)}`, i.courier && `courier ${money(i.courier)}`].filter(Boolean).join(' + '))}">${i.processing + i.success + i.courier ? '−' + money(i.processing + i.success + i.courier) : '—'}</span>
                           <span class="rl-num payout-num">${dollars(i.payout)}</span>
                           ${
                             i.parcels?.length
@@ -3155,6 +3565,19 @@ function renderSettings() {
     </div>
 
     <div class="card">
+      <h2>Your costs</h2>
+      <div class="row">
+        <label class="f" style="max-width:260px">Courier cost per parcel ($) <input id="courierCost" type="number" min="0" step="0.01" value="${S.courierCost ?? ''}" placeholder="e.g. 5.23" /></label>
+      </div>
+      <p class="hint">What you pay to send a parcel. It comes off your payout on New listing and on Sold (not for pickups or cash).</p>
+    </div>
+
+    <div class="card">
+      <h2>Total AI spend</h2>
+      <div id="aiSpend"></div>
+    </div>
+
+    <div class="card">
       <h2>AI photos (OpenAI)</h2>
       <div class="row">
         <label class="f">API key <input id="oaKey" type="password" spellcheck="false" autocomplete="off" placeholder="${S.openai?.hasKey ? '•••••••• saved — paste to replace' : 'sk-…'}" /></label>
@@ -3204,6 +3627,35 @@ function renderSettings() {
     </div>
   </div>`;
 
+  // Running total of what AI features have cost, worked out from OpenAI's token counts on each call.
+  const renderSpend = () => {
+    const photos = Object.values(S.aiUsage || {}).reduce((a, u) => ({ n: a.n + (u.n || 0), usd: a.usd + (u.usd || 0) }), { n: 0, usd: 0 });
+    const matches = S.aiMatchUsage || { n: 0, usd: 0 };
+    const total = photos.usd + matches.usd;
+    const box = $('#aiSpend');
+    if (!box) return;
+    box.innerHTML = `
+      <div class="ai-cost-row">
+        <div class="on"><span>Total</span><b>US$${total.toFixed(2)}</b><small>≈ NZ$${(total * 1.7).toFixed(2)}</small></div>
+        <div><span>AI photos</span><b>US$${photos.usd.toFixed(2)}</b><small>${photos.n} photo${photos.n === 1 ? '' : 's'}</small></div>
+        <div><span>Lowest-match checks</span><b>US$${matches.usd.toFixed(2)}</b><small>${matches.n} check${matches.n === 1 ? '' : 's'}</small></div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:10px">
+        <button class="btn small" id="spendReset" ${total ? '' : 'disabled'}>Reset</button>
+        <span class="hint" style="margin:0">Worked out from OpenAI's token counts at their published rates, counted from when Tagline started tracking. Your OpenAI dashboard has the exact bill.</span>
+      </div>`;
+    $('#spendReset').onclick = async () => {
+      if (!confirm('Reset the AI spend totals to $0? (Per-photo cost averages reset too.)')) return;
+      S = await api.updateSettings({ aiMatchUsage: { n: 0, usd: 0 }, aiUsageReset: true });
+      renderSpend();
+      renderAiCost?.();
+    };
+  };
+  api.getSettings().then((s) => ((S = s), renderSpend())).catch(renderSpend);
+  $('#courierCost').oninput = debounce(async (e) => {
+    const v = e.target.value === '' ? 0 : Math.max(0, Math.round(+e.target.value * 100) / 100);
+    S = await api.updateSettings({ courierCost: v });
+  }, 400);
   const oaStatus = (text, color = '') => {
     const st = $('#oaStatus');
     st.textContent = text;
@@ -3846,4 +4298,5 @@ $('#modal').addEventListener('click', (e) => e.target.id === 'modal' && !$('#go:
 (async () => {
   S = await api.getSettings();
   go(S.accounts.some((a) => a.env === S.env) ? 'new' : 'settings');
+  restoreAiJobs(); // AI photos (and queued listings) waiting from last time
 })();

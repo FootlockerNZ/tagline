@@ -37,6 +37,7 @@ const DEFAULTS = {
   // listingId → { env, memberId, title, price, picture, endDate, archivedAt }
   relistArchive: {},
   trace: { token: '' }, // Trace (jointrace.co) bearer token for product lookup, encrypted
+  courierCost: 0, // what you pay the courier per parcel; comes off payouts
   openai: { key: '' }, // OpenAI API key for AI photos, encrypted
   ai: { model: 'gpt-image-2.6-sunburst', quality: 'high', prompt: '' }, // AI photo settings; '' prompt = built-in default
   // Discord webhook (URL encrypted). events: which kinds of message to send.
@@ -151,6 +152,11 @@ function updateSettings(patch) {
     email: keepLogin ? (patch.trace?.email ?? s.trace.email ?? '') : '',
     password: keepLogin ? (patch.trace?.password ? enc(patch.trace.password) : s.trace.password ?? '') : '',
   };
+  // Resetting AI spend clears the per-photo cost averages (objects merge, so this needs doing here).
+  if (patch.aiUsageReset) {
+    next.aiUsage = {};
+    delete next.aiUsageReset;
+  }
   // OpenAI key: '' clears it, undefined leaves it alone.
   const ok = patch.openai?.key;
   next.openai = { key: ok === undefined ? s.openai?.key || '' : ok ? enc(ok.trim()) : '' };

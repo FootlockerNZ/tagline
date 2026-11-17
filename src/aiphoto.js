@@ -137,4 +137,34 @@ async function generate({ refFile, productDataUrl, vars }) {
   }
 }
 
-module.exports = { DEFAULT_PROMPT, MODELS, QUALITIES, saveRef, refDataUrl, generate };
+// The AI photo queue is saved to disk (one JSON file per job, images included) so it survives
+// closing the app. Jobs that were still generating when the app closed come back as "interrupted".
+const jobsDir = () => path.join(app.getPath('userData'), 'ai-jobs');
+function saveJob(job) {
+  if (!/^[\w-]+$/.test(String(job?.id))) throw new Error('Bad job id');
+  fs.mkdirSync(jobsDir(), { recursive: true });
+  fs.writeFileSync(path.join(jobsDir(), `${job.id}.json`), JSON.stringify(job));
+  return true;
+}
+function loadJobs() {
+  if (!fs.existsSync(jobsDir())) return [];
+  return fs
+    .readdirSync(jobsDir())
+    .filter((f) => f.endsWith('.json'))
+    .map((f) => {
+      try {
+        return JSON.parse(fs.readFileSync(path.join(jobsDir(), f), 'utf8'));
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+    .sort((a, b) => (a.started || 0) - (b.started || 0));
+}
+function deleteJob(id) {
+  const p = path.join(jobsDir(), `${path.basename(String(id))}.json`);
+  if (fs.existsSync(p)) fs.unlinkSync(p);
+  return true;
+}
+
+module.exports = { DEFAULT_PROMPT, MODELS, QUALITIES, saveRef, refDataUrl, generate, saveJob, loadJobs, deleteJob };
