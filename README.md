@@ -1,5 +1,9 @@
 # Tagline
 
+[![Latest release](https://img.shields.io/github/v/release/FootlockerNZ/tagline?label=download&sort=semver)](https://github.com/FootlockerNZ/tagline/releases/latest)
+
+**[⬇ Download the latest version](https://github.com/FootlockerNZ/tagline/releases/latest)** (Windows `.exe`, Mac `.dmg`) · [All releases](https://github.com/FootlockerNZ/tagline/releases)
+
 Desktop app for listing on Trade Me fast. Set up a section for each kind of thing you sell, with its
 own category, templates, shipping and payment, then list in seconds. Manage everything after that from
 one place: live listings (edit, withdraw, bulk price edits, views and watchers), relists, sales, buyer
