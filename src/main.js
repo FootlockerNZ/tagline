@@ -463,6 +463,35 @@ handle('live:list', async (accountIds) => {
 handle('listing:get', async ({ accountId, listingId }) => tm.api(account(accountId), 'GET', `/v1/Selling/Listings/${listingId}.json`));
 
 // Edit sends the whole form back: anything left out is reset, so `listing` is the fetched form with changes applied.
+// Import a listing (live, ended or unsold; one made outside the app or on Trade Me's older system)
+// so it can be listed again through the app. ref: a listing number or any Trade Me listing link.
+handle('listing:import', async ({ accountId, ref }) => {
+  const id = (String(ref).match(/(?:listing\/|[?&]id=|auction-|^\s*)(\d{8,12})/i) || [])[1];
+  if (!id) throw new Error('Paste a Trade Me listing number or link, e.g. 6217932906 or trademe.co.nz/a/listing/6217932906');
+  const acc = account(accountId);
+  const d = await tm.api(acc, 'GET', `/v1/Listings/${id}.json`).catch((e) => {
+    throw new Error(/404/.test(e.message) ? `Listing #${id} wasn't found on Trade Me (it may be too old).` : e.message);
+  });
+  const photos = (d.Photos || []).map((p) => p.Value?.FullSize || p.Value?.Large).filter(Boolean);
+  return {
+    listingId: +id,
+    mine: !!acc.memberId && +d.Member?.MemberId === +acc.memberId,
+    title: d.Title || '',
+    subtitle: d.Subtitle || '',
+    body: d.Body || '',
+    category: { number: d.Category || '', path: (await tm.categoryPath(acc.env, d.Category).catch(() => '')) || String(d.CategoryPath || '').split('/').filter(Boolean).join(' › ').replace(/-/g, ' ') },
+    buyNowOnly: !!d.IsBuyNowOnly || (!d.StartPrice && !!d.BuyNowPrice),
+    buyNow: d.BuyNowPrice || 0,
+    start: d.StartPrice || 0,
+    reserve: d.ReservePrice || 0,
+    quantity: d.Quantity || 1,
+    isNew: d.IsNew !== false,
+    sku: d.SKU || d.ExternalReferenceId || '',
+    attributes: (d.Attributes || []).filter((a) => a.Name && a.Value != null).map((a) => ({ name: a.Name, value: String(a.Value) })),
+    photos,
+  };
+});
+
 // Photos on a live listing. photos: in order, each { id } (an existing Trade Me photo) or
 // { base64 } (a new JPEG to upload). Re-reads the live form so nothing else changes.
 handle('listing:photos', async ({ accountId, listingId, photos }) => {

@@ -30,6 +30,7 @@ contextBridge.exposeInMainWorld('api', {
   getListing: (payload) => call('listing:get', payload),
   editListing: (payload) => call('listing:edit', payload),
   saveListingPhotos: (payload) => call('listing:photos', payload),
+  importListing: (payload) => call('listing:import', payload),
   withdrawListing: (payload) => call('listing:withdraw', payload),
   appVersion: () => call('app:version'),
   discordTest: (url) => call('discord:test', url),

@@ -148,4 +148,9 @@ const validate = (account, listing) => api(account, 'POST', '/v1/Selling/Validat
 const list = (account, listing) => api(account, 'POST', '/v1/Selling.json', listing);
 const listingUrl = (env, id) => `${HOSTS[env].www}/Browse/Listing.aspx?id=${id}`;
 
-module.exports = { login, api, searchCategories, categoryDetails, uploadPhoto, validate, list, listingUrl };
+// "0153-0439-0762-" → "Clothing & Fashion › Women › Shoes" (as the category picker shows it).
+async function categoryPath(env, number) {
+  return (await categoryTree(env)).find((c) => c.number === number)?.path || '';
+}
+
+module.exports = { login, api, searchCategories, categoryDetails, categoryPath, uploadPhoto, validate, list, listingUrl };

@@ -422,13 +422,14 @@ function renderNew() {
           : '<a href="#" data-goto="settings">Connect an account</a>'
       }
     </div>
+    <button class="btn small" id="importBtn" title="Copy one of your Trade Me listings into this form to list it again">⇩ Import listing</button>
   </div>
   <div class="grid">
     <div>
       <div class="card">
         <h2>Product</h2>
         <div class="sku-wrap" style="margin-bottom:12px">
-          <input id="sku" placeholder="SKU or product name, e.g. DD1391-100 or Dunk Low Panda" value="${esc(F.query ?? F.sku)}" spellcheck="false" autofocus />
+          <input id="sku" placeholder="SKU, product name or a Trade Me listing link to import" value="${esc(F.query ?? F.sku)}" spellcheck="false" autofocus />
           <span id="brandBadge" class="badge other">Enter a SKU</span>
         </div>
         <div id="traceBox" style="margin-bottom:12px"></div>
@@ -579,8 +580,20 @@ function renderNew() {
   $('#title').addEventListener('input', (e) => ((F.title = e.target.value), (F.titleDirty = true), counts(), suggestSoon()));
   $('#desc').addEventListener('input', (e) => ((F.desc = e.target.value), (F.descDirty = true), counts()));
   $('#resetText').addEventListener('click', (e) => (e.preventDefault(), (F.titleDirty = F.descDirty = false), refreshText()));
-  $('#sku').addEventListener('input', debounce((e) => (newQuery(e.target.value), lookup()), 450));
-  $('#sku').addEventListener('keydown', (e) => e.key === 'Enter' && (newQuery(e.target.value), lookup()));
+  // A Trade Me listing link pasted here imports that listing instead of looking it up as a SKU.
+  const skuOrImport = (v) => {
+    if (/^\s*https?:\/\/(www\.)?(trademe|tmsandbox)\.co\.nz\/\S*\d{8,12}/i.test(v)) {
+      $('#sku').value = '';
+      return importListing(v.trim()).catch((err) => toast(err.message));
+    }
+    newQuery(v);
+    lookup();
+  };
+  // (An import re-renders the form; a typing pause from the old box mustn't then clear the new one.)
+  $('#sku').addEventListener('input', debounce((e) => e.target.isConnected && skuOrImport(e.target.value), 450));
+  $('#sku').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') skuOrImport(e.target.value);
+  });
   $('#brand').addEventListener('change', (e) => ((F.brand = e.target.value), (F.brandTextDirty = false), lookup()));
   $$('#offerSeg button').forEach(
     (b) =>
@@ -608,6 +621,7 @@ function renderNew() {
   });
 
   $('#aiPhotoBtn').onclick = () => makeAiPhoto();
+  $('#importBtn').onclick = () => importListingDialog();
   $('#imgUrl').addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' || !e.target.value.trim()) return;
     addRemoteImage(e.target.value.trim(), false);
@@ -1787,6 +1801,70 @@ async function addAiImage(dataUrl) {
   renderImages();
 }
 
+/* import a listing */
+// Copies one of your Trade Me listings (live, ended, or made outside the app / on Trade Me's older
+// system) into the New listing form: title, description, category, price, condition, quantity, SKU,
+// category details and photos. Shipping, payment and extras come from the current section as usual.
+function importListingDialog(ref = '') {
+  const card = modal(`
+    <h3>Import a listing</h3>
+    <p class="hint modal-sub">Paste the listing number or its Trade Me link. It's copied into the New listing form so you can check it and list it again through Tagline.</p>
+    <label class="f">Listing # or link <input id="impRef" value="${esc(ref)}" placeholder="e.g. 6217932906 or https://www.trademe.co.nz/a/listing/6217932906" /></label>
+    <p class="hint" id="impMsg" style="color:var(--red)"></p>
+    <div class="actions"><button class="btn ghost" id="cancel">Cancel</button><button class="btn primary" id="go">Import</button></div>`);
+  const go = async () => {
+    const v = $('#impRef', card).value.trim();
+    if (!v) return;
+    $('#go', card).disabled = true;
+    $('#go', card).textContent = 'Importing…';
+    try {
+      await importListing(v);
+      closeModal();
+    } catch (err) {
+      $('#impMsg', card).textContent = err.message;
+      $('#go', card).disabled = false;
+      $('#go', card).textContent = 'Import';
+    }
+  };
+  // Braces matter: an on* handler that returns false cancels the key, which would block typing.
+  $('#impRef', card).onkeydown = (e) => {
+    if (e.key === 'Enter') go();
+  };
+  $('#cancel', card).onclick = closeModal;
+  $('#go', card).onclick = go;
+  setTimeout(() => $('#impRef', card)?.focus());
+}
+async function importListing(ref, accountId) {
+  if (!F) F = freshForm();
+  const d = await api.importListing({ accountId: accountId || F.accountId, ref });
+  // A section whose category matches fits best (its templates/shipping/payment); otherwise stay put.
+  const sec = profList(accountId || F.accountId).find((s) => s.category?.number === d.category.number);
+  const keep = { accountId: accountId || F.accountId };
+  F = { ...freshForm(sec?.id || F.profileId, keep.accountId), ...keep };
+  Object.assign(F, {
+    query: d.sku || '',
+    sku: d.sku || '',
+    name: d.title,
+    title: d.title.slice(0, 80),
+    titleDirty: true,
+    desc: d.body,
+    descDirty: true,
+    condition: d.isNew ? 'new' : 'used',
+    category: d.category.number ? d.category : F.category,
+    type: d.buyNowOnly ? 'buynow' : 'auction',
+    price: d.buyNowOnly ? String(d.buyNow) : '',
+    start: d.buyNowOnly ? '' : String(d.start || ''),
+    buyNow: d.buyNowOnly ? '' : String(d.buyNow || ''),
+    reserve: d.reserve ? String(d.reserve) : '',
+    quantity: d.quantity || 1,
+    imported: { listingId: d.listingId, attributes: d.attributes },
+  });
+  if (d.subtitle) F.extras.subtitle = d.subtitle;
+  go('new'); // loads the category's fields and fills them from F.imported.attributes
+  d.photos.forEach((u) => addRemoteImage(u, false));
+  toast(`Imported #${d.listingId}${d.mine ? '' : " (not one of this account's listings)"}. Check it, then list.`);
+}
+
 /* attributes */
 async function loadAttrs() {
   if (!F.category.number) return;
@@ -1802,6 +1880,8 @@ async function loadAttrs() {
     costsSoon();
     F.attrValues = {};
     prefillAttrs(true);
+    // An imported listing's own category details win (same category only).
+    for (const a of F.imported?.attributes || []) if (F.attrs.some((x) => x.name === a.name)) F.attrValues[a.name] = a.value;
   } catch (err) {
     F.attrs = [];
     $('#attrs').innerHTML = `<p class="hint" style="color:var(--red)">${esc(err.message)}</p>`;
@@ -2438,8 +2518,9 @@ function dropPrices(list) {
       .map(
         (r) => `<div class="dp-row" data-id="${r.i.listingId}">
           ${r.i.picture ? `<img src="${esc(r.i.picture)}" alt=""/>` : '<span class="rl-noimg"></span>'}
-          <span class="dp-title">${esc(r.i.title)}${lowest(r.i) ? `<small class="dp-low">lowest match ${dollars(lowest(r.i))}</small>` : ''}</span>
+          <span class="dp-title">${esc(r.i.title)}</span>
           <span class="dp-from">${dollars(r.from)}</span>
+          ${lowest(r.i) ? `<a href="#" class="dp-lowest ${lowest(r.i) < r.from ? 'under' : ''}" data-lm="${esc(LIVE.match[r.i.listingId].best.url)}" title="Cheapest exact match on Trade Me (click to open)">lowest ${dollars(lowest(r.i))}</a>` : '<span class="dp-lowest none">—</span>'}
           <label class="dp-to"><span>$</span><input type="number" min="0.5" step="0.01" data-to="${r.i.listingId}" value="${r.to >= 0.5 ? (Number.isInteger(r.to) ? r.to : r.to.toFixed(2)) : ''}" title="Type your own price for this listing" /></label>
           <span class="dp-pctchg"></span>
         </div>`,
@@ -2452,6 +2533,7 @@ function dropPrices(list) {
           updateGo();
         }),
     );
+    $$('.dp-lowest[data-lm]', card).forEach((a) => (a.onclick = (e) => (e.preventDefault(), api.openExternal(a.dataset.lm))));
     $('#dpEg', card).textContent = { none: 'Exact, cents kept, e.g. $185.90', nearest: 'e.g. $185.90 → $186', down: 'e.g. $185 → $180', up: 'e.g. $185 → $190' }[round];
     updateGo();
   };
@@ -2541,19 +2623,37 @@ function liveMenu(btn, item) {
   m.className = 'row-menu';
   m.style.top = `${r.bottom + 4}px`;
   m.style.right = `${window.innerWidth - r.right}px`;
-  m.innerHTML = '<button data-a="edit">Edit listing</button><button data-a="photos">Edit photos</button><button data-a="ai">✨ AI hero photo</button><button data-a="open">Open on Trade Me</button><button data-a="withdraw" class="danger">Withdraw…</button>';
+  m.innerHTML = '<button data-a="edit">Edit listing</button><button data-a="copy">Copy to new listing</button><button data-a="photos">Edit photos</button><button data-a="ai">✨ AI hero photo</button><button data-a="open">Open on Trade Me</button><button data-a="withdraw" class="danger">Withdraw…</button>';
   document.body.append(m);
   const close = () => (m.remove(), document.removeEventListener('click', close));
   setTimeout(() => document.addEventListener('click', close));
   m.querySelector('[data-a=edit]').onclick = () => (close(), editListing(item));
   m.querySelector('[data-a=photos]').onclick = () => (close(), editLivePhotos(item));
+  m.querySelector('[data-a=copy]').onclick = () => (close(), importListing(String(item.listingId), item.accountId).catch((e) => toast(e.message)));
   m.querySelector('[data-a=ai]').onclick = () => (close(), editLivePhotos(item, { ai: true }));
   m.querySelector('[data-a=open]').onclick = () => (close(), api.openExternal(item.url));
   m.querySelector('[data-a=withdraw]').onclick = () => (close(), withdrawListing(item));
 }
 
 // Lowest exact match for ticked live listings (same AI check as New listing), shown in the Lowest column.
-LIVE.match = {}; // listingId → { loading } | { best, count, checked } | { error }
+// listingId → { loading } | { best, count, checked, at } | { error }. Finished results are saved on
+// this computer so they're still there after closing Tagline (kept 30 days).
+const LM_KEY = 'tagline.lowestMatch';
+LIVE.match = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LM_KEY) || '{}');
+    const cutoff = Date.now() - 30 * 86400000;
+    return Object.fromEntries(Object.entries(saved).filter(([, m]) => m && !m.loading && (m.at || 0) > cutoff));
+  } catch {
+    return {};
+  }
+})();
+const saveLiveMatch = () => {
+  try {
+    const done = Object.fromEntries(Object.entries(LIVE.match).filter(([, m]) => m && !m.loading && !m.error));
+    localStorage.setItem(LM_KEY, JSON.stringify(done));
+  } catch {}
+};
 const LM = { sameSize: true, afterpay: 'any' };
 const sizeFromTitle = (t) => (String(t).match(/\bUS\s?(\d{1,2}(?:\.5)?\s?[WYC]?)\b/i) || String(t).match(/\b(\d{1,2}(?:\.5)?[WYC])\b/i) || [])[1]?.replace(/\s/g, '') || '';
 // Lowest column: the cheapest match's price, linked to it. Red when it's under yours, green when you're
@@ -2586,7 +2686,8 @@ function liveMatchStart(list) {
     if (current === 'live') renderLive();
     runPool(list, 3, async (i) => {
       try {
-        LIVE.match[i.listingId] = await liveMatchOne(i);
+        LIVE.match[i.listingId] = { ...(await liveMatchOne(i)), at: Date.now() };
+        saveLiveMatch();
       } catch (err) {
         LIVE.match[i.listingId] = { error: err.message };
       }
