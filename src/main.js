@@ -909,3 +909,5 @@ app.whenReady().then(() => {
   schedulePoll(15000);
 });
 app.on('window-all-closed', () => app.quit());
+// macOS: clicking the Dock icon with no window open brings the window back.
+app.on('activate', () => BrowserWindow.getAllWindows().length === 0 && createWindow());
