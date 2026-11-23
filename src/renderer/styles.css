@@ -309,8 +309,8 @@ details.comps { margin-top: 10px; padding-top: 10px; }
 .sold-stats b { font-size: 24px; font-weight: 500; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
 .sold-stats .payout-stat { background: var(--sand); }
 .sold-stats .payout-stat span, .sold-stats .payout-stat b { color: var(--sand-ink); }
-.sold-row { display: grid; grid-template-columns: 52px minmax(0, 1fr) 70px 90px 90px 80px 90px 110px; gap: 14px; align-items: center; padding: 8px 12px; border-radius: 12px; }
-.sold-table.with-acc .sold-row { grid-template-columns: 52px minmax(0, 1fr) 110px 70px 90px 90px 80px 90px 110px; }
+.sold-row { display: grid; grid-template-columns: 52px minmax(0, 1fr) 70px 90px 90px 80px 90px 150px 32px; gap: 14px; align-items: center; padding: 8px 12px; border-radius: 12px; }
+.sold-table.with-acc .sold-row { grid-template-columns: 52px minmax(0, 1fr) 110px 70px 90px 90px 80px 90px 150px 32px; }
 .sold-row [data-courier] { white-space: nowrap; }
 /* Lowest exact match */
 .lm { display: block; font-size: 12px; margin-top: 2px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -543,3 +543,10 @@ button:focus-visible { outline: none; box-shadow: 0 0 0 3px #c8c6ff59; }
 .search-box:focus-within { border-color: var(--lavender); }
 .search-box span { color: var(--muted); font-size: 16px; }
 .search-box input { border: 0; background: none; padding: 9px 0; width: 100%; outline: none; }
+input.trace-off, input.trace-off:focus { border-color: var(--red); box-shadow: 0 0 0 3px #ff6b6b33, 0 0 14px #ff6b6b40; }
+.hint.trace-err { color: var(--red); }
+.hint.trace-err a { color: inherit; text-decoration: underline; }
+/* Sold → Shipping column: latest NZ Post update, cut short if long; the tracking one opens full history. */
+.trk-cell { display: block; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.trk-link { border: 0; background: none; padding: 0; font: inherit; font-size: 13px; cursor: pointer; }
+.trk-link:hover { text-decoration: underline; }

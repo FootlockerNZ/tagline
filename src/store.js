@@ -43,6 +43,9 @@ const DEFAULTS = {
   // Discord webhook (URL encrypted). events: which kinds of message to send.
   // seen: sale/question ids already announced, so each is only posted once.
   discord: { url: '', events: { activity: true, sales: true, questions: true }, seen: { sales: [], questions: [] }, primed: false },
+  // Auto feedback for buyers (Positive only, once delivered). since = when it was switched on: older sales are left alone.
+  // log: one entry per purchase we tried, newest first, so nothing is posted twice.
+  feedback: { auto: false, style: '', since: null, log: [] },
   // Settings → General.
   general: {
     startTab: 'new', // page Tagline opens on
@@ -50,6 +53,7 @@ const DEFAULTS = {
     checkUpdates: true, // look for a new version when Tagline opens
     notify: { sales: true, questions: true }, // desktop notifications
     pollMins: 3, // how often new sales/questions are checked (desktop + Discord)
+    refreshMins: 10, // how often Live, Sold and Questions reload in the background
     usdNzd: 1.7, // for showing AI costs in NZ$
     lowestOldDays: 3, // 🔎 Lowest results fade after this many days
     lowestKeepDays: 30, // …and are forgotten after this many
@@ -134,6 +138,24 @@ function publicSettings() {
     trace: { hasToken: !!s.trace.token, viaLogin: !!s.trace.viaLogin, email: s.trace.viaLogin ? s.trace.email || '' : '' },
     discord: { hasUrl: !!s.discord.url, events: s.discord.events },
     openai: { hasKey: !!s.openai?.key },
+    feedback: feedbackSummary(),
+  };
+}
+
+// The Settings card's view of auto feedback: no log, just the last comment and 7-day counts.
+function feedbackSummary() {
+  const f = load().feedback || {};
+  const log = f.log || [];
+  const week = Date.now() - 7 * 24 * 3600 * 1000;
+  const recent = log.filter((e) => Date.parse(e.at) >= week);
+  const last = log.find((e) => e.ok);
+  return {
+    auto: !!f.auto,
+    style: f.style || '',
+    since: f.since || null,
+    last: last ? { text: last.text, title: last.title, at: last.at } : null,
+    week: recent.filter((e) => e.ok).length,
+    weekFailed: recent.filter((e) => !e.ok).length,
   };
 }
 
@@ -162,6 +184,15 @@ function updateSettings(patch) {
     viaLogin: t === undefined ? !!s.trace.viaLogin : !!(t && patch.trace.viaLogin),
     email: keepLogin ? (patch.trace?.email ?? s.trace.email ?? '') : '',
     password: keepLogin ? (patch.trace?.password ? enc(patch.trace.password) : s.trace.password ?? '') : '',
+  };
+  // Auto feedback: switching it on starts a fresh 'since' (only later sales); the log is only written
+  // by the feedback check, never by the window.
+  const fb = patch.feedback || {};
+  next.feedback = {
+    auto: fb.auto === undefined ? !!s.feedback?.auto : !!fb.auto,
+    style: fb.style === undefined ? s.feedback?.style || '' : String(fb.style).slice(0, 200).trim(),
+    since: fb.auto && !s.feedback?.auto ? new Date().toISOString() : s.feedback?.since || null,
+    log: s.feedback?.log || [],
   };
   // Resetting AI spend clears the per-photo cost averages (objects merge, so this needs doing here).
   if (patch.aiUsageReset) {
@@ -193,6 +224,15 @@ function discordSeen(seen, primed = true) {
   const s = load();
   const cap = (a) => [...new Set(a)].slice(-2000);
   save({ ...s, discord: { ...s.discord, seen: { sales: cap(seen.sales), questions: cap(seen.questions) }, primed } });
+}
+
+// One auto-feedback record per purchase (replaces an earlier try for the same purchase), capped.
+// Whether this app has already left feedback on a purchase (manual or automatic).
+const feedbackOk = (purchaseId) => !!(load().feedback?.log || []).find((e) => e.ok && String(e.purchaseId) === String(purchaseId));
+function feedbackRecord(e) {
+  const s = load();
+  const log = [e, ...(s.feedback?.log || []).filter((x) => String(x.purchaseId) !== String(e.purchaseId))].slice(0, 2000);
+  save({ ...s, feedback: { ...s.feedback, log } });
 }
 
 const traceToken = () => dec(load().trace.token) || '';
@@ -250,7 +290,8 @@ const clearHistory = () => save({ ...load(), history: [] });
 // Backup: everything except secrets (API secrets, account logins, Trace login, OpenAI key, Discord
 // webhook). Accounts go in by name and member number only, so sections can be matched back to them.
 function backup() {
-  const { consumer: c, accounts, trace, openai, discord: d, ...rest } = structuredClone(load());
+  // Auto feedback stays on this computer: a backup restored elsewhere must not start posting.
+  const { consumer: c, accounts, trace, openai, discord: d, feedback, ...rest } = structuredClone(load());
   return {
     tagline: 'backup',
     version: 1,
@@ -293,10 +334,11 @@ function restore(b) {
       relistArchive: { ...r.relistArchive, ...s.relistArchive },
       trace: s.trace,
       openai: s.openai,
+      feedback: s.feedback,
       discord: { ...s.discord, events: r.discord?.events || s.discord.events },
     }),
   );
   return { missing };
 }
 
-module.exports = { load, publicSettings, updateSettings, consumer, traceToken, traceLogin, addAccount, removeAccount, getAccount, addHistory, setArchived, isArchived, discordConfig, discordSeen, openaiKey, clearHistory, backup, restore };
+module.exports = { load, publicSettings, updateSettings, consumer, traceToken, traceLogin, addAccount, removeAccount, getAccount, addHistory, setArchived, isArchived, discordConfig, discordSeen, feedbackOk, feedbackRecord, openaiKey, clearHistory, backup, restore };

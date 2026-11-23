@@ -9,6 +9,7 @@ const tm = require('./trademe');
 const sku = require('./sku');
 const trace = require('./trace');
 const discord = require('./discord');
+const feedback = require('./feedback');
 const aiphoto = require('./aiphoto');
 
 // Everything logged to History also goes to Discord (when a webhook is set and Activity is on).
@@ -431,37 +432,41 @@ handle('account:payments', async (accountId) => {
   return { ping: m.includes(32), afterpay: m.includes(64), cash: m.includes(4) };
 });
 
-// Everything currently for sale on one or more accounts, whether listed from this app or not.
+// Everything currently for sale on one account, whether listed from this app or not.
+// Shared by live:list and templates:fromListings.
+const liveFor = async (id) => {
+  const acc = account(id);
+  const out = [];
+  for (let page = 1; page <= 20; page++) {
+    const r = await tm.api(acc, 'GET', `/v1/MyTradeMe/SellingItems/All.json?page=${page}&rows=200&photo_size=List`);
+    for (const i of r.List || []) {
+      out.push({
+        accountId: id,
+        nickname: acc.nickname,
+        listingId: i.ListingId,
+        title: i.Title,
+        picture: i.PictureHref || '',
+        url: tm.listingUrl(acc.env, i.ListingId),
+        buyNow: i.BuyNowPrice || 0,
+        start: i.StartPrice || 0,
+        maxBid: i.MaxBidAmount || 0,
+        bids: i.BidCount || 0,
+        // Trade Me leaves these out when they're 0.
+        views: i.ViewCount ?? 0,
+        watchers: i.BidderAndWatchers ?? 0,
+        quantity: i.Quantity ?? i.RemainingQuantity ?? null,
+        sku: i.SKU || '',
+        startDate: tmDate(i.StartDate),
+        endDate: tmDate(i.EndDate),
+      });
+    }
+    if (!r.List?.length || page * (r.PageSize || 200) >= r.TotalCount) break;
+  }
+  return out;
+};
 handle('live:list', async (accountIds) => {
   const out = [];
-  for (const id of accountIds) {
-    const acc = account(id);
-    for (let page = 1; page <= 20; page++) {
-      const r = await tm.api(acc, 'GET', `/v1/MyTradeMe/SellingItems/All.json?page=${page}&rows=200&photo_size=List`);
-      for (const i of r.List || []) {
-        out.push({
-          accountId: id,
-          nickname: acc.nickname,
-          listingId: i.ListingId,
-          title: i.Title,
-          picture: i.PictureHref || '',
-          url: tm.listingUrl(acc.env, i.ListingId),
-          buyNow: i.BuyNowPrice || 0,
-          start: i.StartPrice || 0,
-          maxBid: i.MaxBidAmount || 0,
-          bids: i.BidCount || 0,
-          // Trade Me leaves these out when they're 0.
-          views: i.ViewCount ?? 0,
-          watchers: i.BidderAndWatchers ?? 0,
-          quantity: i.Quantity ?? i.RemainingQuantity ?? null,
-          sku: i.SKU || '',
-          startDate: tmDate(i.StartDate),
-          endDate: tmDate(i.EndDate),
-        });
-      }
-      if (!r.List?.length || page * (r.PageSize || 200) >= r.TotalCount) break;
-    }
-  }
+  for (const id of accountIds) out.push(...(await liveFor(id)));
   return out.sort((a, b) => (a.endDate || '').localeCompare(b.endDate || ''));
 });
 
@@ -593,6 +598,8 @@ handle('sold:list', async (accountIds) => {
           success,
           payout: Math.round((subtotal + shipping - processing - success) * 100) / 100,
           pending: !!(i.IsPaymentPending || i.PaymentDetails?.IsPaymentPending),
+          // Feedback from the seller's side: on Trade Me already, or left from this app.
+          feedbackLeft: !!i.HasSellerPlaceFeedback || store.feedbackOk(i.PurchaseId),
           status: SOLD_STATUS[i.Status] || '',
           // Courier booked through Trade Me: its tracking numbers come back here.
           pickup: i.ShippingType === 2,
@@ -713,6 +720,64 @@ handle('openai:test', async () => {
   return `Working — ${IMAGE_MODEL} is available.`;
 });
 
+// Drafts the title and description templates from this account's own live listings. OpenAI keeps the
+// seller's wording and swaps each product detail for a placeholder, so the templates fit any product.
+const TEMPLATE_MODEL = 'gpt-5-mini';
+const TEMPLATE_RULES = `You write listing templates for a sneaker seller on Trade Me (New Zealand). You get some of their live listings.
+Make one title template and one description template from them, which the app fills in for each product.
+
+- Keep the seller's wording, tone, emoji, line breaks and fixed text exactly as written.
+- Replace product details with these placeholders: {brand} brand, {name} product name and colourway, {sku} style code, {size} size, {eu} EU size, {colour} colour, {condition} condition.
+- Afterpay: where a listing mentions Afterpay, put {afterpay} in its place and keep the rest of that line as written.
+- Shipping: where a listing names a shipping option or its price, use the matching {shippingName#} or {shippingValue#} from the numbered list you are given.
+- Only use a placeholder for a detail that is really in the listings. Don't invent placeholders or turn general text into one.
+- The filled title must fit in 80 characters, so keep it as short as the seller's own titles.
+- Reply with JSON only: {"title": "...", "description": "..."}`;
+handle('templates:fromListings', async ({ accountId, categoryNumber, shipping = [] }) => {
+  const key = store.openaiKey();
+  if (!key) throw new Error('No OpenAI key saved. Add one in Settings → AI.');
+  const acc = account(accountId);
+  const live = (await liveFor(accountId)).sort((a, b) => (b.startDate || '').localeCompare(a.startDate || ''));
+  if (!live.length) throw new Error(`${acc.nickname} has no live listings to learn from. List something first.`);
+  // Full details (category, description, attributes) only come from the listing itself, so fetch the newest few.
+  const details = (await Promise.all(live.slice(0, 15).map((l) => tm.api(acc, 'GET', `/v1/Listings/${l.listingId}.json`).catch(() => null)))).filter(Boolean);
+  // Prefer listings in this section's category; fall back to any if none match.
+  const matching = details.filter((d) => String(d.Category) === String(categoryNumber));
+  const picked = (matching.length ? matching : details).slice(0, 5);
+  if (!picked.length) throw new Error("Couldn't read your listings from Trade Me. Try again.");
+
+  const listings = picked.map((d, i) =>
+    [
+      `Listing ${i + 1}`,
+      `Title: ${d.Title || ''}`,
+      `SKU: ${d.SKU || d.ExternalReferenceId || ''}`,
+      `Attributes: ${(d.Attributes || []).filter((a) => a.Name && a.Value != null).map((a) => `${a.Name}: ${a.Value}`).join('; ')}`,
+      `Description:\n${String(d.Body || '').replace(/<[^>]+>/g, '\n').replace(/\n{3,}/g, '\n\n').trim().slice(0, 3000)}`,
+    ].join('\n'),
+  ).join('\n\n');
+  const ship = shipping.length ? shipping.map((s, i) => `${i + 1}. {shippingName${i + 1}} = "${s.method}", {shippingValue${i + 1}} = $${s.price}`).join('\n') : 'None set.';
+
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: TEMPLATE_MODEL,
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: TEMPLATE_RULES },
+        { role: 'user', content: `Shipping options for this section:\n${ship}\n\n${listings}` },
+      ],
+    }),
+  });
+  if (res.status === 401) throw new Error('OpenAI rejected the key (401). Check it in Settings → AI.');
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`OpenAI ${res.status}: ${(j.error?.message || 'request failed').slice(0, 160)}`);
+  let out = {};
+  try { out = JSON.parse(j.choices?.[0]?.message?.content || '{}'); } catch { /* handled below */ }
+  if (typeof out.title !== 'string' || typeof out.description !== 'string' || !out.title.trim()) throw new Error("OpenAI didn't return a title and description. Try again.");
+  return { title: out.title.trim(), description: out.description.trim(), count: picked.length };
+});
+
 // Trade Me's Book a courier wizard for one sale, in its own window, logged in as the selling account
 // (same saved login as the embedded Trade Me pages). You choose and confirm the booking there.
 const courierWins = new Map();
@@ -793,13 +858,26 @@ const pollDiscord = async () => {
   polling = true;
   try {
     const accounts = store.load().accounts.map((a) => store.getAccount(a.id)).filter(Boolean);
-    await discord.poll({ tm, accounts, notify: desktopNotify });
+    // The window reloads Sold/Live/Questions as soon as a new sale or question is found.
+    await discord.poll({ tm, accounts, notify: desktopNotify, activity: (kinds) => win?.webContents.send('activity', kinds) });
   } catch (e) {
     console.warn('[discord poll]', e.message);
+  }
+  // Auto feedback runs on the same timer; it does nothing unless it's switched on.
+  try {
+    await feedback.run({ tm, accounts: store.load().accounts.map((a) => store.getAccount(a.id)).filter(Boolean), track: nzpostTrack });
+  } catch (e) {
+    console.warn('[feedback]', e.message);
   }
   polling = false;
 };
 handle('discord:poll', () => pollDiscord());
+
+// Manual feedback from the Sold page: a draft from OpenAI (same style hint), then the seller's text is posted.
+handle('feedback:generate', () => feedback.generate());
+handle('feedback:leave', ({ accountId, purchaseId, listingId, title, picture, text } = {}) =>
+  feedback.leave({ tm, acc: account(accountId), item: { PurchaseId: purchaseId, ListingId: listingId, Title: title, picture }, text }),
+);
 
 // Desktop notifications for new sales and questions. More than 3 of a kind at once become one summary.
 // Clicking one opens Tagline on Sold or Questions.

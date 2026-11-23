@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld('api', {
   appVersion: () => call('app:version'),
   discordTest: (url) => call('discord:test', url),
   openaiTest: () => call('openai:test'),
+  templatesFromListings: (payload) => call('templates:fromListings', payload),
   aiDefaults: () => call('ai:defaults'),
   aiSaveRef: (payload) => call('ai:saveRef', payload),
   aiRef: (file) => call('ai:ref', file),
@@ -48,6 +49,8 @@ contextBridge.exposeInMainWorld('api', {
   onCourierClosed: (fn) => ipcRenderer.on('courier-closed', (_e, p) => fn(p)),
   trackStatus: (refs) => call('track:status', refs),
   discordPoll: () => call('discord:poll'),
+  feedbackGenerate: () => call('feedback:generate'),
+  feedbackLeave: (args) => call('feedback:leave', args),
   checkUpdate: () => call('update:check'),
   downloadUpdate: () => call('update:download'),
   installUpdate: () => call('update:install'),
@@ -64,4 +67,5 @@ contextBridge.exposeInMainWorld('api', {
   openDataFolder: () => call('app:openData'),
   clearHistory: () => call('history:clear'),
   onGoto: (fn) => ipcRenderer.on('goto', (_e, view) => fn(view)),
+  onActivity: (fn) => ipcRenderer.on('activity', (_e, kinds) => fn(kinds)),
 });

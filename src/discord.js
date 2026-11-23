@@ -5,7 +5,7 @@ const store = require('./store');
 const WEBHOOK_RE = /^https:\/\/(?:(?:ptb|canary)\.)?discord(?:app)?\.com\/api\/webhooks\/\d+\/[\w-]+/;
 const isWebhook = (u) => WEBHOOK_RE.test(String(u || '').trim());
 
-const COLORS = { listed: 0x57f287, sale: 0xfee75c, question: 0x5865f2, price: 0xeb459e, edited: 0x5865f2, withdrawn: 0xed4245, 'sold-elsewhere': 0xfee75c, relisted: 0x57f287, 'relist-failed': 0xed4245, answered: 0x5865f2 };
+const COLORS = { listed: 0x57f287, sale: 0xfee75c, question: 0x5865f2, price: 0xeb459e, edited: 0x5865f2, withdrawn: 0xed4245, 'sold-elsewhere': 0xfee75c, relisted: 0x57f287, 'relist-failed': 0xed4245, answered: 0x5865f2, feedback: 0x57f287 };
 const TITLES = {
   listed: 'New listing',
   edited: 'Listing edited',
@@ -17,6 +17,7 @@ const TITLES = {
   archived: 'Archived',
   unarchived: 'Unarchived',
   answered: 'Question answered',
+  feedback: 'Feedback left',
   'account-added': 'Account added',
   'account-removed': 'Account removed',
 };
@@ -88,59 +89,55 @@ async function test(url) {
   return true;
 }
 
-// Background check for new sales and questions on every account (production only), for Discord and
-// desktop notifications. The first run after setting a webhook only records what's there, so old
-// ones aren't posted. notify(fresh) gets the new ones for desktop notifications.
-async function poll({ tm, accounts, notify }) {
+// Background check for new sales and questions on every account (production only). It always runs,
+// since the window refreshes from it too; Discord and desktop notifications only send for kinds that
+// are switched on. The first run after setting a webhook only records what's there, so old ones aren't
+// posted. notify(fresh) gets the new ones for desktop notifications; activity(kinds) tells the window.
+async function poll({ tm, accounts, notify, activity }) {
   const d = store.discordConfig();
   const g = store.load().general?.notify || {};
-  const hook = isWebhook(d.url);
-  const want = { sales: (hook && d.events.sales) || g.sales, questions: (hook && d.events.questions) || g.questions };
-  if (!want.sales && !want.questions) return;
   const seen = { sales: new Set(d.seen.sales), questions: new Set(d.seen.questions) };
   const fresh = [];
   for (const acc of accounts) {
     if (acc.env === 'sandbox') continue;
-    if (want.sales) {
-      const r = await tm.api(acc, 'GET', '/v1/MyTradeMe/SoldItems/Last45Days.json?rows=200&photo_size=List').catch(() => null);
-      for (const i of r?.List || []) {
-        const key = String(i.PurchaseId || `${i.ListingId}-${i.SoldDate}`);
-        if (seen.sales.has(key)) continue;
-        seen.sales.add(key);
-        fresh.push(['sales', {
-          kind: 'sale',
-          title: `Sold: ${i.Title}`,
-          url: tm.listingUrl(acc.env, i.ListingId),
-          thumb: i.PictureHref,
-          account: acc.nickname,
-          fields: [
-            { name: 'Price', value: money(i.SubtotalPrice ?? i.SalePrice ?? i.Price) },
-            { name: 'Qty', value: (i.QuantitySold || 1) > 1 ? i.QuantitySold : '' },
-            { name: 'Buyer', value: i.Buyer?.Nickname },
-          ],
-        }]);
-      }
+    const sold = await tm.api(acc, 'GET', '/v1/MyTradeMe/SoldItems/Last45Days.json?rows=200&photo_size=List').catch(() => null);
+    for (const i of sold?.List || []) {
+      const key = String(i.PurchaseId || `${i.ListingId}-${i.SoldDate}`);
+      if (seen.sales.has(key)) continue;
+      seen.sales.add(key);
+      fresh.push(['sales', {
+        kind: 'sale',
+        title: `Sold: ${i.Title}`,
+        url: tm.listingUrl(acc.env, i.ListingId),
+        thumb: i.PictureHref,
+        account: acc.nickname,
+        fields: [
+          { name: 'Price', value: money(i.SubtotalPrice ?? i.SalePrice ?? i.Price) },
+          { name: 'Qty', value: (i.QuantitySold || 1) > 1 ? i.QuantitySold : '' },
+          { name: 'Buyer', value: i.Buyer?.Nickname },
+        ],
+      }]);
     }
-    if (want.questions) {
-      const r = await tm.api(acc, 'GET', '/v1/Listings/Questions/UnansweredQuestions.json').catch(() => null);
-      for (const q of r?.List || []) {
-        const key = String(q.ListingQuestionId);
-        if (seen.questions.has(key)) continue;
-        seen.questions.add(key);
-        fresh.push(['questions', {
-          kind: 'question',
-          title: `Question on #${q.ListingId}`,
-          url: tm.listingUrl(acc.env, q.ListingId),
-          description: q.Comment,
-          account: acc.nickname,
-          fields: [{ name: 'From', value: q.AskingMember?.Nickname }],
-        }]);
-      }
+    const questions = await tm.api(acc, 'GET', '/v1/Listings/Questions/UnansweredQuestions.json').catch(() => null);
+    for (const q of questions?.List || []) {
+      const key = String(q.ListingQuestionId);
+      if (seen.questions.has(key)) continue;
+      seen.questions.add(key);
+      fresh.push(['questions', {
+        kind: 'question',
+        title: `Question on #${q.ListingId}`,
+        url: tm.listingUrl(acc.env, q.ListingId),
+        description: q.Comment,
+        account: acc.nickname,
+        fields: [{ name: 'From', value: q.AskingMember?.Nickname }],
+      }]);
     }
   }
   if (d.primed) {
     for (const [kind, p] of fresh) send(kind, p); // send() skips kinds switched off for Discord
     notify?.(fresh.filter(([kind]) => g[kind]));
+    const kinds = [...new Set(fresh.map(([kind]) => kind))];
+    if (kinds.length) activity?.(kinds);
   }
   store.discordSeen({ sales: [...seen.sales], questions: [...seen.questions] }, true);
 }

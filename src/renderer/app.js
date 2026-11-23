@@ -133,18 +133,40 @@ function go(v) {
   current = v;
   renderNav();
   ({ new: renderNew, live: renderLive, relist: renderRelist, sold: renderSold, questions: renderQuestions, history: renderHistory, defaults: renderDefaults, settings: renderSettings })[v]();
-  // A page whose data changed while you were elsewhere reloads in the background on open.
-  if (STALE.delete(v)) refreshView(v);
+  // A page whose data changed while you were elsewhere, or is older than the auto refresh, reloads on open.
+  if (STALE.delete(v) || (POLLED.has(v) && Date.now() - (LOADED_AT[v] || 0) > refreshMs())) refreshView(v);
 }
 
 // Keeping list pages fresh. Pages already loaded keep showing their rows while they reload.
 const STALE = new Set();
 const LOADED = { live: () => LIVE.items, sold: () => SOLD.items, relist: () => R.items, questions: () => Q.data };
 const LOADERS = { live: () => loadLive(), sold: () => loadSold(), relist: () => loadRelist(), questions: () => loadQuestions() };
+const RENDERS = { live: () => renderLive(), sold: () => renderSold(), questions: () => renderQuestions() };
+const LOADED_AT = {}; // when each list page last loaded, for the auto refresh
+const refreshMs = () => (+G().refreshMins || 10) * 60000;
 function refreshView(v) {
   // A page never opened loads itself on first visit.
   if (LOADED[v]?.()) LOADERS[v]();
 }
+// Re-render a list page, but not while you're typing in a search box or an answer: the render waits
+// for blur, so focus and text stay put. Fetching carries on regardless.
+const HELD = new Set();
+const typing = () => {
+  const el = document.activeElement;
+  return !!el && ((el.matches('.search-box input') && el.value !== '') || el.matches('.q-reply textarea'));
+};
+function paint(v) {
+  if (typing()) return HELD.add(v);
+  RENDERS[v]();
+}
+// Short delay so a click on something in the page isn't lost to a re-render on mousedown.
+document.addEventListener('focusout', () =>
+  setTimeout(() => {
+    if (!HELD.size || typing()) return;
+    HELD.clear();
+    RENDERS[current]?.();
+  }, 300),
+);
 // Call after anything that changes listings on Trade Me: reloads the open page now, others on next visit.
 function dataChanged(...views) {
   views.forEach((v) => (v === current ? refreshView(v) : STALE.add(v)));
@@ -157,11 +179,22 @@ const pollNow = () =>
   POLLED.has(current) &&
   $('#modal').classList.contains('hidden') &&
   !(current === 'live' && LIVE.running) &&
-  // Don't re-render under you mid-typing (search box, question answer).
-  !document.activeElement?.matches('input, textarea, select') &&
   refreshView(current);
 setInterval(pollNow, 120000);
 document.addEventListener('visibilitychange', pollNow);
+// Every "Auto refresh" minutes, reload the loaded Live, Sold and Questions pages that aren't open (the open
+// one already refreshes every 2 minutes). Skipped while the window is hidden; catches up when it's back.
+let bgAt = Date.now();
+setInterval(() => {
+  if (document.hidden || Date.now() - bgAt < refreshMs()) return;
+  bgAt = Date.now();
+  POLLED.forEach((v) => v !== current && !(v === 'live' && LIVE.running) && refreshView(v));
+}, 60000);
+// The main process found new sales or questions: reload the pages they change now.
+api.onActivity((kinds) => {
+  if (kinds.includes('sales')) dataChanged('sold', 'live');
+  if (kinds.includes('questions')) dataChanged('questions');
+});
 
 /* ---------- category picker (shared) ---------- */
 function categoryPicker(root, initial, onPick) {
@@ -1217,6 +1250,14 @@ function renderTrace() {
       <img src="${esc(p.thumb)}" alt="" loading="lazy"/>
       <span class="tr-title">${esc(p.title)}</span><span class="tr-sku">${esc(p.sku)}</span>
     </div>`;
+  // Not connected to Trace (or its login failed): glow the product box red and say how to fix it.
+  const noTrace = !S.trace.hasToken;
+  $('#sku')?.classList.toggle('trace-off', noTrace || (!!F.traceState && !['loading', 'none'].includes(F.traceState)));
+  if (noTrace) {
+    box.innerHTML = '<p class="hint trace-err">Trace isn\'t connected, so products won\'t be looked up. <a href="#" id="traceConnect">Log in to Trace</a></p>';
+    $('#traceConnect').onclick = (e) => (e.preventDefault(), (SET_TAB = 'trademe'), go('settings'));
+    return;
+  }
   if (F.traceState === 'loading') return (box.innerHTML = '<div class="tr-pick"><div class="tr-row"><div class="spinner" style="width:16px;height:16px"></div><span class="tr-title" style="color:var(--muted)">Looking up on Trace…</span></div></div>');
   if (F.traceState === 'none') return (box.innerHTML = '<p class="hint">No Trace match — add the name and photos yourself.</p>');
   if (F.traceState) return (box.innerHTML = `<p class="hint" style="color:var(--red)">${esc(F.traceState)}</p>`);
@@ -2468,9 +2509,10 @@ async function loadLive() {
   if (!ids.length) return;
   LIVE.loading = true;
   LIVE.error = '';
-  if (current === 'live') renderLive();
+  if (current === 'live') paint('live');
   try {
     LIVE.items = await api.live(ids);
+    LOADED_AT.live = Date.now();
     const stillLive = new Set(LIVE.items.map((i) => i.listingId));
     LIVE.selected = new Set([...LIVE.selected].filter((id) => stillLive.has(id)));
     verifyLowest(LIVE.items).catch(() => {});
@@ -2478,7 +2520,7 @@ async function loadLive() {
     LIVE.error = err.message;
   }
   LIVE.loading = false;
-  if (current === 'live') renderLive();
+  if (current === 'live') paint('live');
 }
 
 function renderLive() {
@@ -3261,16 +3303,108 @@ async function loadSold() {
   if (!ids.length) return;
   SOLD.loading = true;
   SOLD.error = '';
-  if (current === 'sold') renderSold();
+  if (current === 'sold') paint('sold');
   try {
     SOLD.items = await api.sold(ids);
     SOLD.loadedFor = SOLD.scope;
+    LOADED_AT.sold = Date.now();
   } catch (err) {
     SOLD.error = err.message;
   }
   SOLD.loading = false;
-  if (current === 'sold') renderSold();
+  if (current === 'sold') paint('sold');
   loadTracking();
+}
+
+const FB_MAX = 500; // Trade Me's limit on feedback text (see src/feedback.js)
+// The Sold row's ⋯: Book courier (none booked yet) and Leave feedback (not left yet). No ⋯ when neither applies.
+const soldMenuItems = (i) => [
+  i.purchaseId && !i.pickup && !i.parcels?.length && !i.booked && ['courier', 'Book courier'],
+  i.purchaseId && !i.feedbackLeft && ['fb', 'Leave feedback'],
+].filter(Boolean);
+function soldAction(i) {
+  return soldMenuItems(i).length ? `<button class="dots-btn" data-smenu="${i.purchaseId}" title="More">⋯</button>` : '<span></span>';
+}
+// Same popover as Live's ⋯ menu.
+function soldMenu(btn, sale) {
+  $('#rowMenu')?.remove();
+  const r = btn.getBoundingClientRect();
+  const m = document.createElement('div');
+  m.id = 'rowMenu';
+  m.className = 'row-menu';
+  m.style.top = `${r.bottom + 4}px`;
+  m.style.right = `${window.innerWidth - r.right}px`;
+  m.innerHTML = soldMenuItems(sale).map(([a, l]) => `<button data-a="${a}">${l}</button>`).join('');
+  document.body.append(m);
+  const close = () => (m.remove(), document.removeEventListener('click', close));
+  setTimeout(() => document.addEventListener('click', close));
+  m.querySelector('[data-a=courier]')?.addEventListener('click', () => (close(), bookCourier(sale)));
+  m.querySelector('[data-a=fb]')?.addEventListener('click', () => (close(), leaveFeedback(sale)));
+}
+// Shipping column: NZ Post's latest update (click for full tracking), or where the parcel is up to without one.
+function shipCell(i) {
+  if (i.parcels?.length) return trackButton(i);
+  const text = i.pickup ? 'Pickup' : i.booked ? 'Courier booked' : 'Not booked';
+  return `<span class="trk-cell trk-wait">${text}</span>`;
+}
+// Leave positive feedback for one sale: the seller writes it or takes an AI draft, then it's posted.
+function leaveFeedback(sale) {
+  if (!sale) return;
+  const card = modal(`
+    <h3>Leave feedback</h3>
+    <p class="hint" style="font-size:14px;margin:0">Positive feedback for ${esc(sale.buyer || 'the buyer')} on ${esc(sale.title)}. It's posted under your name and can't be edited afterwards.</p>
+    <label class="f" style="margin-top:10px">Comment <textarea id="fbText" rows="4" spellcheck="true"></textarea></label>
+    <div class="row" style="justify-content:space-between;align-items:center;gap:8px">
+      <button class="btn small" id="fbGen">Generate with AI</button>
+      <span class="hint" id="fbCount" style="margin:0"></span>
+    </div>
+    <p class="hint" id="fbNote" style="margin:6px 0 0"></p>
+    <div class="actions"><button class="btn ghost" id="cancel">Cancel</button><button class="btn primary" id="fbGo">Leave feedback</button></div>`);
+  const txt = $('#fbText', card);
+  const go = $('#fbGo', card);
+  const note = $('#fbNote', card);
+  const count = () => {
+    const over = overCount($('#fbCount', card), txt, txt.value.trim().length, FB_MAX);
+    go.disabled = !txt.value.trim() || over;
+  };
+  txt.oninput = count;
+  count();
+  $('#cancel', card).onclick = closeModal;
+  $('#fbGen', card).onclick = async () => {
+    const gen = $('#fbGen', card);
+    gen.disabled = true;
+    gen.textContent = 'Writing…';
+    note.style.color = '';
+    note.textContent = '';
+    try {
+      const r = await api.feedbackGenerate();
+      txt.value = r.text;
+      count();
+      note.textContent = r.ai ? 'Draft from AI. Edit it if you like.' : "AI didn't answer, so this is a built-in comment. Edit it if you like.";
+    } catch (e) {
+      note.style.color = 'var(--red)';
+      note.textContent = e.message;
+    } finally {
+      gen.disabled = false;
+      gen.textContent = 'Generate with AI';
+    }
+  };
+  go.onclick = async () => {
+    go.disabled = true;
+    go.textContent = 'Posting…';
+    try {
+      await api.feedbackLeave({ accountId: sale.accountId, purchaseId: sale.purchaseId, listingId: sale.listingId, title: sale.title, picture: sale.picture, text: txt.value.trim() });
+      sale.feedbackLeft = true;
+      closeModal();
+      renderSold();
+      toast('Feedback left');
+    } catch (e) {
+      note.style.color = 'var(--red)';
+      note.textContent = e.message;
+      go.textContent = 'Leave feedback';
+      count();
+    }
+  };
 }
 
 function renderSold() {
@@ -3337,25 +3471,20 @@ function renderSold() {
               !items.length
                 ? `<div class="empty">No sales in the last ${SOLD.days} days.</div>`
                 : `<div class="rl-table sold-table ${showAcc ? 'with-acc' : ''}">
-                    <div class="sold-row rl-head"><span></span><span>Listing</span>${showAcc ? '<span>Account</span>' : ''}<span>Sold</span><span>Paid via</span><span>Total</span><span>Fees</span><span>Payout</span><span></span></div>
+                    <div class="sold-row rl-head"><span></span><span>Listing</span>${showAcc ? '<span>Account</span>' : ''}<span>Sold</span><span>Paid via</span><span>Total</span><span>Fees</span><span>Payout</span><span>Shipping</span><span></span></div>
                     ${items
                       .map(
                         (i) => `<div class="sold-row">
                           ${i.picture ? `<img src="${esc(i.picture)}" alt=""/>` : '<span class="rl-noimg"></span>'}
-                          <span class="rl-title"><b>${esc(i.title)}</b><a href="#" data-url="${esc(i.url)}">${i.qty > 1 ? `${i.qty} × ` : ''}to ${esc(i.buyer || 'buyer')}${i.status ? ' · ' + esc(i.status) : ''}</a>${trackLine(i)}</span>
+                          <span class="rl-title"><b>${esc(i.title)}</b><a href="#" data-url="${esc(i.url)}">${i.qty > 1 ? `${i.qty} × ` : ''}to ${esc(i.buyer || 'buyer')}${i.status ? ' · ' + esc(i.status) : ''}</a></span>
                           ${showAcc ? `<span class="rl-muted">${esc(i.nickname)}</span>` : ''}
                           <span class="rl-muted">${i.soldDate ? when(i.soldDate) : ''}</span>
                           <span>${i.method ? `<i class="pay-tag p${i.method}">${PAY_NAME[i.method] || 'Other'}</i>` : `<i class="pay-tag">${i.pending ? 'Pending' : 'Unpaid'}</i>`}</span>
                           <span class="rl-num">${dollars(i.total)}</span>
                           <span class="rl-muted" title="${esc([i.processing && `${PAY_NAME[i.method] || 'Payment'} fee ${money(i.processing)}`, i.success && `success fee ${money(i.success)}`, i.courier && `courier ${money(i.courier)}`].filter(Boolean).join(' + '))}">${i.processing + i.success + i.courier ? '−' + money(i.processing + i.success + i.courier) : '—'}</span>
                           <span class="rl-num payout-num">${dollars(i.payout)}</span>
-                          ${
-                            i.parcels?.length
-                              ? `<button class="btn small" data-track="${i.purchaseId}" title="Delivery status from NZ Post">Track</button>`
-                              : i.purchaseId && !i.pickup
-                                ? `<button class="btn small ${i.booked ? '' : 'primary'}" data-courier="${i.purchaseId}" title="Book a courier for this sale on Trade Me">${i.booked ? 'Booking' : 'Book courier'}</button>`
-                                : '<span></span>'
-                          }
+                          ${shipCell(i)}
+                          ${soldAction(i)}
                         </div>`,
                       )
                       .join('')}
@@ -3372,7 +3501,7 @@ function renderSold() {
     }`;
 
   const saleBy = (pid) => (SOLD.items || []).find((i) => String(i.purchaseId) === pid);
-  $$('[data-courier]').forEach((b) => (b.onclick = () => bookCourier(saleBy(b.dataset.courier))));
+  $$('[data-smenu]').forEach((b) => (b.onclick = (e) => (e.stopPropagation(), soldMenu(b, saleBy(b.dataset.smenu)))));
   $$('[data-track]').forEach((b) => (b.onclick = () => showTracking(saleBy(b.dataset.track))));
   bindSearch('soldQ', (v) => (SOLD.q = v), renderSold);
   $('#soldCourier').onclick = () => bookCourierGeneral(SOLD.scope);
@@ -3429,15 +3558,16 @@ async function loadQuestions() {
   if (!Q.accountId) return;
   Q.loading = true;
   Q.error = '';
-  if (current === 'questions') renderQuestions();
+  if (current === 'questions') paint('questions');
   try {
     Q.data = await api.questions(Q.accountId);
+    LOADED_AT.questions = Date.now();
   } catch (err) {
     Q.error = err.message;
   }
   Q.loading = false;
   updateQBadge();
-  if (current === 'questions') renderQuestions();
+  if (current === 'questions') paint('questions');
 }
 
 function renderQuestions() {
@@ -3450,11 +3580,13 @@ function renderQuestions() {
   const totalUn = all.reduce((s, l) => s + unansweredOf(l), 0);
   // API listings first (filtered), then newer-platform listings whose Q&A only shows on Trade Me's page.
   const apiShown = all
-    .filter((l) => !l.koru && (Q.filter === 'all' || unansweredOf(l)))
+    // Only listings with at least one question; Unanswered narrows that to ones waiting on you.
+    .filter((l) => !l.koru && l.questions.length && (Q.filter === 'all' || unansweredOf(l)))
     .sort((a, b) => unansweredOf(b) - unansweredOf(a) || (b.questions.at(-1)?.commentDate || '').localeCompare(a.questions.at(-1)?.commentDate || ''));
   // Newer-platform listings: the app can't tell if they have unanswered questions, so they only
   // appear under "All" (Unanswered just mentions them).
-  const koruAll = all.filter((l) => l.koru);
+  // Their count is only known once opened: drop ones found to have none (kept while open).
+  const koruAll = all.filter((l) => l.koru && (l.qaCount !== 0 || l.listingId === Q.selected));
   const koruShown = Q.filter === 'all' ? koruAll.sort((a, b) => (b.qaCount || 0) - (a.qaCount || 0)) : [];
   const shown = [...apiShown, ...koruShown];
   const itemHtml = (l) => {
@@ -3561,15 +3693,16 @@ async function loadTracking() {
   try {
     Object.assign(SOLD.track, await api.trackStatus(refs));
   } catch {}
-  if (current === 'sold') renderSold();
+  if (current === 'sold') paint('sold');
 }
-function trackLine(sale) {
-  const p = sale.parcels?.[0];
-  if (!p) return sale.booked ? '<span class="trk trk-wait">Courier booked · waiting for tracking</span>' : '';
+// The Sold row's tracking button shows NZ Post's latest update (coloured by state); click for the full history.
+function trackButton(sale) {
+  const p = sale.parcels[0];
   const t = SOLD.track[p.ref];
   const cls = !t ? 'trk-wait' : t.error ? 'trk-err' : t.delivered ? 'trk-done' : 'trk-go';
-  const text = !t ? 'Checking NZ Post…' : t.error ? 'Couldn\'t reach NZ Post' : t.status;
-  return `<span class="trk ${cls}">${esc(p.courier || 'Courier')} · ${esc(text)}${sale.parcels.length > 1 ? ` · +${sale.parcels.length - 1} more` : ''}</span>`;
+  const text = !t ? 'Checking…' : t.error ? "Couldn't reach NZ Post" : t.status || 'No updates yet';
+  const more = sale.parcels.length > 1 ? ` · +${sale.parcels.length - 1}` : '';
+  return `<button class="trk-cell trk-link ${cls}" data-track="${sale.purchaseId}" title="${esc(`${p.courier || 'Courier'}: ${text}`)} — click for full tracking">${esc(text)}${more}</button>`;
 }
 async function showTracking(sale) {
   if (!sale) return;
@@ -3722,6 +3855,46 @@ async function sendAnswer(listing, qid) {
   if (current === 'questions') renderQuestions();
 }
 
+// Drafts the title and description templates from the account's own listings (OpenAI does the rewriting).
+// save() is the section's save from renderSections, so the result goes through the same persist path.
+async function fillFromListings(p, accountId, save) {
+  const btn = $('#tFromListings');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner small"></div><span>Reading your listings…</span>';
+  let r;
+  try {
+    r = await api.templatesFromListings({ accountId, categoryNumber: p.category?.number || '', shipping: shipOptions(p.shipping) });
+  } catch (err) {
+    return toast(err.message, 6000);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Fill from my listings';
+  }
+  const replacing = !!(p.titleTemplate || p.descriptionTemplate);
+  const card = modal(`
+    <h3>Templates from your listings</h3>
+    <p class="hint modal-sub">Drafted from ${r.count} of your listings${replacing ? '. This replaces the title and description templates you have now' : ''}. Check the placeholders before you use them.</p>
+    <div class="tpl-prev">
+      <div class="tpl-prev-label">Title</div>
+      <div class="tpl-prev-title">${esc(r.title)}</div>
+      <div class="tpl-prev-label">Description</div>
+      <div class="tpl-prev-desc">${esc(r.description)}</div>
+    </div>
+    <div class="actions"><button class="btn ghost" id="cancel">Cancel</button><button class="btn primary" id="useTpl">Use these</button></div>`);
+  $('#cancel', card).onclick = closeModal;
+  $('#useTpl', card).onclick = () => {
+    closeModal();
+    // Only write if the section is still on screen; otherwise the closed-over profile list is stale.
+    if (!btn.isConnected) return toast('Templates not saved: you left that section. Run it again.', 5000);
+    p.titleTemplate = r.title;
+    p.descriptionTemplate = r.description;
+    $('#tTitle').value = r.title;
+    $('#tDesc').value = r.description;
+    save();
+    toast('Templates filled from your listings');
+  };
+}
+
 // Shows what a section's templates produce for a sample product (Nike Dunk Low "Panda", DD1391-100, US 10).
 function previewTemplates(p) {
   const afterpay = !!p.payment?.afterpay;
@@ -3760,6 +3933,7 @@ const H_ACTIONS = {
   archived: { label: 'Archived', group: 'archived', tone: '' },
   unarchived: { label: 'Unarchived', group: 'archived', tone: '' },
   answered: { label: 'Answered question', group: 'answered', tone: 'lav' },
+  feedback: { label: 'Feedback left', group: 'feedback', tone: 'green' },
   'account-added': { label: 'Account added', group: 'accounts', tone: '' },
   'account-removed': { label: 'Account removed', group: 'accounts', tone: 'red' },
 };
@@ -3844,13 +4018,20 @@ const flush = debounce(async () => {
 }, 400);
 
 const SET_TABS = [['trademe', 'Trade Me'], ['ai', 'AI'], ['integrations', 'Integrations'], ['general', 'General']];
-const SET_CARDS = { trademe: ['Accounts', 'Trade Me API'], ai: ['Total AI spend', 'AI photos'], integrations: ['Product lookup', 'Discord'], general: ['Your costs', 'Startup', 'Desktop notifications', 'Lowest match', 'Backup', 'Updates'] };
-const G_DEFAULTS = { startTab: 'new', startOnLogin: false, checkUpdates: true, notify: { sales: true, questions: true }, pollMins: 3, usdNzd: 1.7, lowestOldDays: 3, lowestKeepDays: 30 };
+const SET_CARDS = { trademe: ['Accounts', 'Trade Me API'], ai: ['Total AI spend', 'AI photos'], integrations: ['Product lookup', 'Discord', 'Auto feedback'], general: ['Your costs', 'Startup', 'Desktop notifications', 'Lowest match', 'Backup', 'Updates'] };
+const G_DEFAULTS = { startTab: 'new', startOnLogin: false, checkUpdates: true, notify: { sales: true, questions: true }, pollMins: 3, refreshMins: 10, usdNzd: 1.7, lowestOldDays: 3, lowestKeepDays: 30 };
 const G = () => ({ ...G_DEFAULTS, ...(S?.general || {}) });
 const nzd = (usd) => usd * (+G().usdNzd || 1.7);
 let SET_TAB = 'trademe';
+// Auto feedback card: last comment left and the 7-day counts (from settings:get, no log).
+const fbStatusText = (f) => {
+  const last = f.last ? `Last left: “${esc(f.last.text)}” on ${esc(f.last.title)}` : 'Nothing left yet.';
+  const failed = f.weekFailed ? ` · ${f.weekFailed} failed (retried up to 3 times)` : '';
+  return `${last}<br>Left in the past 7 days: ${f.week || 0}${failed}`;
+};
 function renderSettings() {
   const c = S.consumer[S.env];
+  const fb = S.feedback || {};
   view.innerHTML = `
   <div class="settings">
     <h1>Settings</h1>
@@ -3920,6 +4101,7 @@ function renderSettings() {
       </div>
       <div class="row">
         <label class="f" style="max-width:260px">Check every (minutes) <input id="gPoll" type="number" min="1" max="60" step="1" value="${G().pollMins}" /></label>
+        <label class="f" style="max-width:260px">Auto refresh every (minutes) <input id="gRefresh" type="number" min="1" max="60" step="1" value="${G().refreshMins}" /></label>
       </div>
       <p class="hint">A Windows / Mac notification while Tagline is open; click it to jump to Sold or Questions. The same check sends Discord messages. Ones from before you switched it on aren't shown.</p>
     </div>
@@ -3990,6 +4172,15 @@ function renderSettings() {
     </div>
 
     <div class="card">
+      <h2>Auto feedback</h2>
+      <label class="ai-auto"><input type="checkbox" id="fbAuto" ${fb.auto ? 'checked' : ''} /> <span><b>Leave positive feedback for buyers automatically</b><small>Posted under your name, so it's off until you switch it on. Once NZ Post shows the parcel delivered, Tagline leaves Positive feedback. Only production accounts, only sales with tracking, and only sales from after you switch it on. Sales without tracking: use Leave feedback on the Sold page.</small></span></label>
+      <div class="row">
+        <label class="f">Style hint <input id="fbStyle" maxlength="200" spellcheck="false" value="${esc(fb.style || '')}" placeholder="e.g. friendly, mention fast payment" /></label>
+      </div>
+      <p class="hint" id="fbStatus">${fbStatusText(fb)}</p>
+    </div>
+
+    <div class="card">
       <h2>Updates</h2>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn small" id="updCheck">Check for updates</button>
@@ -4051,6 +4242,7 @@ function renderSettings() {
     }, 400));
   numG('#gRate', 'usdNzd', 0.5, 5, 2);
   numG('#gPoll', 'pollMins', 1, 60);
+  numG('#gRefresh', 'refreshMins', 1, 60);
   numG('#gLmOld', 'lowestOldDays', 1, 60);
   numG('#gLmKeep', 'lowestKeepDays', 1, 365);
   $('#gStart').onchange = (e) => setG({ startTab: e.target.value });
@@ -4190,6 +4382,15 @@ function renderSettings() {
         S = await api.updateSettings({ discord: { events: { [b.dataset.dc]: on } } });
       }),
   );
+
+  // Auto feedback: saved as it changes; the status line refreshes in place.
+  $('#fbAuto').onchange = async (e) => {
+    S = await api.updateSettings({ feedback: { auto: e.target.checked } });
+    $('#fbStatus').innerHTML = fbStatusText(S.feedback || {});
+  };
+  $('#fbStyle').onchange = async (e) => {
+    S = await api.updateSettings({ feedback: { style: e.target.value.trim() } });
+  };
 
   api.appVersion().then((v) => $('#appVer') && ($('#appVer').textContent = v)).catch(() => {});
   $('#updCheck').onclick = async () => {
@@ -4563,7 +4764,7 @@ function renderSections() {
         </div>
         <p class="hint">Placeholders: <code>{brand}</code> <code>{name}</code> <code>{sku}</code> <code>{size}</code> <code>{eu}</code> <code>{colour}</code> <code>{condition}</code> <code>{afterpay}</code> (shows the matching Afterpay text above exactly as typed, only when Afterpay is on)</p>
         <p class="hint">Shipping: <code>{shippingName1}</code> <code>{shippingValue1}</code>, <code>{shippingName2}</code> <code>{shippingValue2}</code>… numbered in the order of your options under Shipping (e.g. "Nationwide courier" and "$8").</p>
-        <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn" id="tPreview">Preview</button></div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px"><button class="btn ghost" id="tFromListings">Fill from my listings</button><button class="btn" id="tPreview">Preview</button></div>
       </div>
     </div>`;
 
@@ -4722,6 +4923,7 @@ function renderSections() {
 
   $('#tTitle').oninput = (e) => ((p.titleTemplate = e.target.value), save());
   $('#tPreview').onclick = () => previewTemplates(p);
+  $('#tFromListings').onclick = () => fillFromListings(p, defAcc, save);
   $('#tDesc').oninput = (e) => ((p.descriptionTemplate = e.target.value), save());
   $('#tAfterpay').oninput = (e) => ((p.afterpayText = e.target.value), save());
   $('#tAfterpayDesc').oninput = (e) => ((p.afterpayDescText = e.target.value), save());
